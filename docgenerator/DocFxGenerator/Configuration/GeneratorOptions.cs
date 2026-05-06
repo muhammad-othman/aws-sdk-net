@@ -22,8 +22,6 @@ public class GeneratorOptions
 
     public string[] TargetFrameworks => ["net472", "net8.0", "netstandard2.0", "netcoreapp3.1"];
 
-    public string PrimaryFramework => "net472";
-
     public static GeneratorOptions? ParseArgs(string[] args)
     {
         var dict = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);

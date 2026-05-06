@@ -16,16 +16,26 @@ public class GenerateCommand
 
     public async Task<int> ExecuteAsync()
     {
+        var totalTimer = Stopwatch.StartNew();
+
         try
         {
             var discovery = new ServiceDiscovery(_options);
-            var configBuilder = new DocFxConfigBuilder(_options, discovery);
+            var configBuilder = new DocFxConfigBuilder(_options);
             var intermediateFolder = Path.GetFullPath(_options.IntermediateFolder);
 
-            if (_options.Clean && Directory.Exists(intermediateFolder))
+            if (_options.Clean)
             {
-                Console.WriteLine("Cleaning intermediate folder...");
-                Directory.Delete(intermediateFolder, recursive: true);
+                if (Directory.Exists(intermediateFolder))
+                {
+                    Console.WriteLine("Cleaning intermediate folder...");
+                    Directory.Delete(intermediateFolder, recursive: true);
+                }
+                if (Directory.Exists(_options.OutputFolder))
+                {
+                    Console.WriteLine("Cleaning output folder...");
+                    Directory.Delete(_options.OutputFolder, recursive: true);
+                }
             }
 
             Directory.CreateDirectory(intermediateFolder);
@@ -40,24 +50,40 @@ public class GenerateCommand
             }
 
             configBuilder.WriteFilterConfig(intermediateFolder);
+            GenerateRootContent(services, intermediateFolder);
 
-            // Phase 1: Generate metadata with incremental + parallel support
+            // Phase 1: Generate metadata for all frameworks and merge unique members
             var manifest = new IncrementalManifest(_options);
             var servicesToGenerate = FilterChangedServices(services, manifest);
+            var stepTimer = Stopwatch.StartNew();
             await GenerateMetadataAsync(servicesToGenerate, discovery, intermediateFolder);
+            Console.WriteLine($"  Completed in {FormatElapsed(stepTimer.Elapsed)}");
+
             foreach (var svc in servicesToGenerate)
                 manifest.RecordService(svc);
             manifest.Save();
 
             // Phase 2: Pre-process examples
+            stepTimer.Restart();
             PreProcessExamples(services);
+            Console.WriteLine($"  Completed in {FormatElapsed(stepTimer.Elapsed)}");
 
             // Phase 3: Post-process YAML (platform availability + async notes)
+            stepTimer.Restart();
             PostProcessMetadata(servicesToGenerate);
+            Console.WriteLine($"  Completed in {FormatElapsed(stepTimer.Elapsed)}");
 
             // Phase 4: Build documentation (YAML → HTML)
+            stepTimer.Restart();
             await BuildDocumentationAsync(configBuilder, intermediateFolder);
+            Console.WriteLine($"  Completed in {FormatElapsed(stepTimer.Elapsed)}");
 
+            // Phase 5: Generate redirect rules
+            stepTimer.Restart();
+            GenerateRedirects(services);
+            Console.WriteLine($"  Completed in {FormatElapsed(stepTimer.Elapsed)}");
+
+            Console.WriteLine($"\nTotal time: {FormatElapsed(totalTimer.Elapsed)}");
             return 0;
         }
         catch (Exception ex)
@@ -67,6 +93,13 @@ public class GenerateCommand
                 Console.Error.WriteLine(ex.StackTrace);
             return 1;
         }
+    }
+
+    private static string FormatElapsed(TimeSpan elapsed)
+    {
+        if (elapsed.TotalMinutes >= 1)
+            return $"{(int)elapsed.TotalMinutes} minute{((int)elapsed.TotalMinutes != 1 ? "s" : "")} {elapsed.Seconds} seconds";
+        return $"{elapsed.TotalSeconds:F1} seconds";
     }
 
     private List<ServiceInfo> FilterChangedServices(List<ServiceInfo> services, IncrementalManifest manifest)
@@ -105,33 +138,10 @@ public class GenerateCommand
             return;
         }
 
-        Console.WriteLine($"Generating metadata for {services.Count} services...");
-
-        if (services.Count > _options.BatchThreshold && _options.MaxParallelism > 1)
-        {
-            var runner = new ParallelMetadataRunner(_options, discovery);
-            await runner.RunAsync(services, intermediateFolder);
-        }
-        else
-        {
-            await GenerateMetadataSequentialAsync(services, discovery, intermediateFolder);
-        }
-    }
-
-    private async Task GenerateMetadataSequentialAsync(
-        List<ServiceInfo> services,
-        ServiceDiscovery discovery,
-        string intermediateFolder)
-    {
-        var configBuilder = new DocFxConfigBuilder(_options, discovery);
-        var configJson = configBuilder.BuildMetadataConfig(services, intermediateFolder);
-        var configPath = Path.Combine(intermediateFolder, "docfx-metadata.json");
-        await File.WriteAllTextAsync(configPath, configJson);
-
-        if (_options.Verbose)
-            Console.WriteLine($"  Metadata config written to: {configPath}");
-
-        await RunDocfxCommandAsync("metadata", configPath);
+        Console.WriteLine($"Generating metadata for {services.Count} services across all frameworks...");
+        var merger = new MetadataMerger(_options, discovery);
+        await merger.GenerateAndMergeAllFrameworksAsync(services, intermediateFolder);
+        Console.WriteLine("Metadata generation complete.");
     }
 
     private void PreProcessExamples(List<ServiceInfo> services)
@@ -158,6 +168,46 @@ public class GenerateCommand
         Console.WriteLine("Post-processing complete.");
     }
 
+    private void GenerateRedirects(List<ServiceInfo> services)
+    {
+        Console.WriteLine("Generating redirect rules...");
+        var generator = new RedirectRuleGenerator(_options);
+        generator.GenerateRedirects(services);
+    }
+
+    private void GenerateRootContent(List<ServiceInfo> services, string intermediateFolder)
+    {
+        var apiFolder = Path.Combine(intermediateFolder, "api");
+        Directory.CreateDirectory(apiFolder);
+
+        // Root toc.yml → top navbar with single "API Reference" entry
+        var rootTocPath = Path.Combine(intermediateFolder, "toc.yml");
+        File.WriteAllText(rootTocPath, "- name: API Reference\n  href: api/\n");
+
+        // api/toc.yml → left sidebar listing all services
+        var apiTocPath = Path.Combine(apiFolder, "toc.yml");
+        using (var writer = new StreamWriter(apiTocPath))
+        {
+            foreach (var service in services.OrderBy(s => s.Name))
+            {
+                writer.WriteLine($"- name: {service.Name}");
+                writer.WriteLine($"  href: {service.Name}/toc.yml");
+            }
+        }
+
+        // api/index.md → landing page (inside api/ so it gets the left sidebar)
+        var indexPath = Path.Combine(apiFolder, "index.md");
+        File.WriteAllText(indexPath, """
+            ---
+            title: AWS SDK for .NET API Reference
+            ---
+
+            # AWS SDK for .NET API Reference
+
+            Welcome to the AWS SDK for .NET API Reference. Select a service from the navigation to browse its API documentation.
+            """.Replace("            ", ""));
+    }
+
     private async Task BuildDocumentationAsync(DocFxConfigBuilder configBuilder, string intermediateFolder)
     {
         Console.WriteLine("Building documentation (YAML → HTML)...");
@@ -171,7 +221,24 @@ public class GenerateCommand
 
         await RunDocfxCommandAsync("build", buildConfigPath);
 
+        WriteRootRedirect();
+
         Console.WriteLine($"Documentation built successfully to: {_options.OutputFolder}");
+    }
+
+    private void WriteRootRedirect()
+    {
+        var rootIndex = Path.Combine(_options.OutputFolder, "index.html");
+        if (!File.Exists(rootIndex))
+        {
+            File.WriteAllText(rootIndex, """
+                <!DOCTYPE html>
+                <html>
+                <head><meta http-equiv="refresh" content="0;url=api/"></head>
+                <body><a href="api/">Redirecting to API Reference...</a></body>
+                </html>
+                """.Replace("                ", ""));
+        }
     }
 
     private async Task RunDocfxCommandAsync(string command, string configPath)
@@ -181,7 +248,7 @@ public class GenerateCommand
         var psi = new ProcessStartInfo
         {
             FileName = docfxPath,
-            Arguments = $"{command} \"{configPath}\"",
+            Arguments = $"{command} \"{configPath}\" --disableGitFeatures",
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,

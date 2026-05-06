@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using DocFxGenerator.Configuration;
 using DocFxGenerator.Orchestration;
 
@@ -19,12 +18,5 @@ if (options.Verbose)
     Console.WriteLine($"Batch threshold: {options.BatchThreshold}");
 }
 
-var stopwatch = Stopwatch.StartNew();
-
 var generator = new GenerateCommand(options);
-var exitCode = await generator.ExecuteAsync();
-
-stopwatch.Stop();
-Console.WriteLine($"Documentation generation completed in {stopwatch.Elapsed.TotalSeconds:F1}s");
-
-return exitCode;
+return await generator.ExecuteAsync();

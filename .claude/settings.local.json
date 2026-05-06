@@ -15,7 +15,14 @@
       "Bash(find /tmp/docfx -name \"ItemViewModel.cs\" -o -name \"PageViewModel.cs\" | head -10)",
       "Read(//tmp/**)",
       "Bash(grep -A 3 \"uid: Amazon.S3.AmazonS3Client.PutObjectAsync\\\\*$\" \"c:/repos/aws-sdk-net-docfx/docgenerator/_intermediate/api/S3/Amazon.S3.AmazonS3Client.yml\")",
-      "Bash(grep -v \"script\\\\|link\\\\|meta\\\\|^$\")"
+      "Bash(grep -v \"script\\\\|link\\\\|meta\\\\|^$\")",
+      "Bash(grep -E \"\\\\.\\(json|xml|config\\)$\")",
+      "Bash(xargs grep -l \"PrimaryFramework\\\\|GeneratorOptions\")",
+      "Bash(~/.dotnet/tools/docfx build *)",
+      "Bash(grep 'name=\"M:Amazon.BedrockRuntime.AmazonBedrockRuntimeClient' /c/repos/aws-sdk-net-docfx/Deployment/assemblies/net8.0/AWSSDK.BedrockRuntime.xml | sort > /tmp/net8_methods.txt && grep 'name=\"M:Amazon.BedrockRuntime.AmazonBedrockRuntimeClient' /c/repos/aws-sdk-net-docfx/Deployment/assemblies/net472/AWSSDK.BedrockRuntime.xml | sort > /tmp/net472_methods.txt && diff /tmp/net472_methods.txt /tmp/net8_methods.txt)"
+    ],
+    "additionalDirectories": [
+      "\\tmp"
     ]
   }
 }

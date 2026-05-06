@@ -6,46 +6,10 @@ namespace DocFxGenerator.Configuration;
 public class DocFxConfigBuilder
 {
     private readonly GeneratorOptions _options;
-    private readonly ServiceDiscovery _discovery;
 
-    public DocFxConfigBuilder(GeneratorOptions options, ServiceDiscovery discovery)
+    public DocFxConfigBuilder(GeneratorOptions options)
     {
         _options = options;
-        _discovery = discovery;
-    }
-
-    public string BuildMetadataConfig(IReadOnlyList<ServiceInfo> services, string outputBasePath)
-    {
-        var references = _discovery.GetReferenceAssemblies(_options.PrimaryFramework);
-        var frameworkPath = Path.Combine(_options.AssembliesRoot, _options.PrimaryFramework);
-
-        var metadata = services.Select(service => new MetadataItem
-        {
-            Src = new[]
-            {
-                new SrcItem
-                {
-                    Files = new[] { Path.GetFileName(service.DllPath) },
-                    Src = frameworkPath
-                }
-            },
-            Dest = Path.Combine(outputBasePath, "api", service.Name),
-            References = references.ToArray(),
-            Filter = GetFilterConfigPath(outputBasePath),
-            MemberLayout = "SeparatePages"
-        }).ToArray();
-
-        var config = new DocfxConfig
-        {
-            Metadata = metadata
-        };
-
-        return JsonSerializer.Serialize(config, new JsonSerializerOptions
-        {
-            WriteIndented = true,
-            DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
-            PropertyNamingPolicy = JsonNamingPolicy.CamelCase
-        });
     }
 
     public string BuildFullConfig(string intermediateFolder)
@@ -58,8 +22,8 @@ public class DocFxConfigBuilder
                 {
                     new ContentItem
                     {
-                        Files = new[] { "api/**/*.yml", "api/**/toc.yml" },
-                        Src = intermediateFolder
+                        Files = new[] { "api/**/*.yml", "api/**/toc.yml", "api/index.md", "toc.yml" },
+                        Src = "."
                     }
                 },
                 Overwrite = new[]
@@ -67,7 +31,7 @@ public class DocFxConfigBuilder
                     new ContentItem
                     {
                         Files = new[] { "overwrite/**/*.md" },
-                        Src = intermediateFolder
+                        Src = "."
                     }
                 },
                 GlobalMetadata = new Dictionary<string, object>
@@ -96,6 +60,11 @@ public class DocFxConfigBuilder
 
         var filterContent = """
             apiRules:
+              - exclude:
+                  uidRegex: ^Amazon\..+\.Internal$
+                  type: Namespace
+              - exclude:
+                  uidRegex: ^Amazon\..+\.Internal\.
               - include:
                   uidRegex: ^Amazon\.
                   type: Namespace
@@ -127,29 +96,9 @@ public class DocFxConfigBuilder
 
 #region Config models
 
-public class DocfxConfig
-{
-    public MetadataItem[]? Metadata { get; set; }
-}
-
 public class DocfxFullConfig
 {
     public BuildConfig? Build { get; set; }
-}
-
-public class MetadataItem
-{
-    public SrcItem[]? Src { get; set; }
-    public string? Dest { get; set; }
-    public string[]? References { get; set; }
-    public string? Filter { get; set; }
-    public string? MemberLayout { get; set; }
-}
-
-public class SrcItem
-{
-    public string[]? Files { get; set; }
-    public string? Src { get; set; }
 }
 
 public class BuildConfig

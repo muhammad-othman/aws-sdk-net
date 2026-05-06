@@ -11,37 +11,44 @@ public class ServiceDiscovery
 
     public List<ServiceInfo> DiscoverServices()
     {
-        var primaryFrameworkPath = Path.Combine(_options.AssembliesRoot, _options.PrimaryFramework);
+        var serviceMap = new Dictionary<string, ServiceInfo>(StringComparer.OrdinalIgnoreCase);
 
-        if (!Directory.Exists(primaryFrameworkPath))
-            throw new DirectoryNotFoundException($"Primary framework assemblies not found at: {primaryFrameworkPath}");
-
-        var dlls = Directory.GetFiles(primaryFrameworkPath, "AWSSDK.*.dll")
-            .Where(f => !IsExcludedAssembly(Path.GetFileName(f)))
-            .OrderBy(f => f)
-            .ToList();
-
-        var services = new List<ServiceInfo>();
-
-        foreach (var dllPath in dlls)
+        foreach (var framework in _options.TargetFrameworks)
         {
-            var fileName = Path.GetFileNameWithoutExtension(dllPath);
-            var serviceName = ExtractServiceName(fileName);
-            if (serviceName == null) continue;
+            var frameworkPath = Path.Combine(_options.AssembliesRoot, framework);
+            if (!Directory.Exists(frameworkPath))
+                continue;
 
-            var xmlPath = Path.ChangeExtension(dllPath, ".xml");
-            if (!File.Exists(xmlPath)) continue;
+            var dlls = Directory.GetFiles(frameworkPath, "AWSSDK.*.dll")
+                .Where(f => !IsExcludedAssembly(Path.GetFileName(f)))
+                .OrderBy(f => f);
 
-            var service = new ServiceInfo
+            foreach (var dllPath in dlls)
             {
-                Name = serviceName,
-                DllPath = dllPath,
-                XmlPath = xmlPath,
-                FrameworkAvailability = GetFrameworkAvailability(serviceName)
-            };
+                var fileName = Path.GetFileNameWithoutExtension(dllPath);
+                var serviceName = ExtractServiceName(fileName);
+                if (serviceName == null) continue;
 
-            services.Add(service);
+                var xmlPath = Path.ChangeExtension(dllPath, ".xml");
+                if (!File.Exists(xmlPath)) continue;
+
+                if (serviceMap.ContainsKey(serviceName))
+                    continue;
+
+                serviceMap[serviceName] = new ServiceInfo
+                {
+                    Name = serviceName,
+                    DllPath = dllPath,
+                    XmlPath = xmlPath,
+                    FrameworkAvailability = GetFrameworkAvailability(serviceName)
+                };
+            }
         }
+
+        if (serviceMap.Count == 0)
+            throw new InvalidOperationException($"No assemblies found under: {_options.AssembliesRoot}");
+
+        var services = serviceMap.Values.OrderBy(s => s.Name).ToList();
 
         if (!_options.GenerateAllServices)
         {
@@ -57,6 +64,12 @@ public class ServiceDiscovery
         }
 
         return services;
+    }
+
+    public string? GetDllPathForFramework(ServiceInfo service, string framework)
+    {
+        var dllPath = Path.Combine(_options.AssembliesRoot, framework, $"AWSSDK.{service.Name}.dll");
+        return File.Exists(dllPath) ? dllPath : null;
     }
 
     public List<string> GetReferenceAssemblies(string framework)

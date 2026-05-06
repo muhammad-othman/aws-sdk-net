@@ -222,9 +222,16 @@ public class PlatformAvailabilityInjector
 
         if (modified)
         {
-            using var writer = new StreamWriter(yamlFile);
-            writer.WriteLine("### YamlMime:ManagedReference");
-            yaml.Save(writer, assignAnchors: false);
+            var sb = new System.Text.StringBuilder();
+            sb.AppendLine("### YamlMime:ManagedReference");
+            using (var sw = new StringWriter(sb))
+            {
+                yaml.Save(sw, assignAnchors: false);
+            }
+            var result = sb.ToString().TrimEnd();
+            if (result.EndsWith("..."))
+                result = result[..result.LastIndexOf("...")].TrimEnd();
+            File.WriteAllText(yamlFile, result + Environment.NewLine);
         }
     }
 

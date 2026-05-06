@@ -67,18 +67,22 @@ public class IncrementalManifest
         using var sha = SHA256.Create();
         using var stream = new MemoryStream();
 
-        // Hash the DLL
-        if (File.Exists(service.DllPath))
+        // Hash DLLs and XML docs from all available frameworks
+        foreach (var framework in _options.TargetFrameworks)
         {
-            var dllBytes = File.ReadAllBytes(service.DllPath);
-            stream.Write(dllBytes);
-        }
+            var dllPath = Path.Combine(_options.AssembliesRoot, framework, $"AWSSDK.{service.Name}.dll");
+            if (File.Exists(dllPath))
+            {
+                var dllBytes = File.ReadAllBytes(dllPath);
+                stream.Write(dllBytes);
+            }
 
-        // Hash the XML doc
-        if (File.Exists(service.XmlPath))
-        {
-            var xmlBytes = File.ReadAllBytes(service.XmlPath);
-            stream.Write(xmlBytes);
+            var xmlPath = Path.ChangeExtension(dllPath, ".xml");
+            if (File.Exists(xmlPath))
+            {
+                var xmlBytes = File.ReadAllBytes(xmlPath);
+                stream.Write(xmlBytes);
+            }
         }
 
         stream.Position = 0;
