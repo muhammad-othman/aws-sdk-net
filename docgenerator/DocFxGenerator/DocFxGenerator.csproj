@@ -14,4 +14,8 @@
     <PackageReference Include="YamlDotNet" Version="17.1.0" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Include="Templates\**\*" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>

@@ -10,7 +10,12 @@
       "Bash(dotnet add *)",
       "Bash(dotnet build *)",
       "Bash(dotnet list *)",
-      "Bash(dotnet run *)"
+      "Bash(dotnet run *)",
+      "Bash(awk '/^- uid: Amazon.S3.AmazonS3Client.PutObject\\\\\\(Amazon.S3.Model.PutObjectRequest\\\\\\)$/,/^- uid:/' \"c:/repos/aws-sdk-net-docfx/docgenerator/_intermediate/api/S3/Amazon.S3.AmazonS3Client.yml\")",
+      "Bash(find /tmp/docfx -name \"ItemViewModel.cs\" -o -name \"PageViewModel.cs\" | head -10)",
+      "Read(//tmp/**)",
+      "Bash(grep -A 3 \"uid: Amazon.S3.AmazonS3Client.PutObjectAsync\\\\*$\" \"c:/repos/aws-sdk-net-docfx/docgenerator/_intermediate/api/S3/Amazon.S3.AmazonS3Client.yml\")",
+      "Bash(grep -v \"script\\\\|link\\\\|meta\\\\|^$\")"
     ]
   }
 }

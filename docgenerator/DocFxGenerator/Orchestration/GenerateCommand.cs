@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using DocFxGenerator.Configuration;
+using DocFxGenerator.PostProcessing;
 
 namespace DocFxGenerator.Orchestration;
 
@@ -43,7 +44,10 @@ public class GenerateCommand
             // Phase 1: Generate metadata (DLL → YAML)
             await GenerateMetadataAsync(services, configBuilder, intermediateFolder);
 
-            // Phase 2: Build documentation (YAML → HTML)
+            // Phase 2: Post-process YAML (inject platform availability + async notes)
+            PostProcessMetadata(services);
+
+            // Phase 3: Build documentation (YAML → HTML)
             await BuildDocumentationAsync(configBuilder, intermediateFolder);
 
             return 0;
@@ -55,6 +59,21 @@ public class GenerateCommand
                 Console.Error.WriteLine(ex.StackTrace);
             return 1;
         }
+    }
+
+    private void PostProcessMetadata(List<ServiceInfo> services)
+    {
+        Console.WriteLine("Post-processing metadata (platform availability + async notes)...");
+        var injector = new PlatformAvailabilityInjector(_options);
+
+        foreach (var service in services)
+        {
+            if (_options.Verbose)
+                Console.WriteLine($"  Processing {service.Name}...");
+            injector.ProcessService(service);
+        }
+
+        Console.WriteLine("Post-processing complete.");
     }
 
     private async Task GenerateMetadataAsync(

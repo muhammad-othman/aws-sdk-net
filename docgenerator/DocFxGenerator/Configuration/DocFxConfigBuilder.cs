@@ -76,7 +76,7 @@ public class DocFxConfigBuilder
                     ["_appTitle"] = "AWS SDK for .NET API Reference",
                     ["_enableSearch"] = true
                 },
-                Template = new[] { "default", "modern" },
+                Template = new[] { "default", "modern", GetTemplatePath() },
                 Dest = _options.OutputFolder
             }
         };
@@ -115,6 +115,13 @@ public class DocFxConfigBuilder
     private static string GetFilterConfigPath(string outputBasePath)
     {
         return Path.Combine(outputBasePath, "filterConfig.yml");
+    }
+
+    private static string GetTemplatePath()
+    {
+        var assemblyDir = Path.GetDirectoryName(typeof(DocFxConfigBuilder).Assembly.Location)!;
+        var templatePath = Path.Combine(assemblyDir, "Templates", "aws-sdk");
+        return templatePath.Replace('\\', '/');
     }
 }
 

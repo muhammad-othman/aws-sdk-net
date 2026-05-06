@@ -1,0 +1,17 @@
+{{!Licensed to the .NET Foundation under one or more agreements. The .NET Foundation licenses this file to you under the MIT license.}}
+
+{{>partials/class.header}}
+
+{{#isAsyncMethod}}
+<div class="alert alert-info" role="alert"><strong>Note:</strong> This is an asynchronous operation using the standard naming convention for .NET 4.7.2 or higher.</div>
+{{/isAsyncMethod}}
+{{#hasAsyncCounterpart}}
+<div class="alert alert-info" role="alert"><strong>Note:</strong> For the asynchronous version of this method, see <a href="{{asyncCounterpartHref}}">{{asyncCounterpartName}}</a>.</div>
+{{/hasAsyncCounterpart}}
+
+{{#versionInformation}}
+<div class="facts text-secondary">
+<dl><dt>Version Information</dt></dl>
+<dl><dd>{{{versionInformation}}}</dd></dl>
+</div>
+{{/versionInformation}}
