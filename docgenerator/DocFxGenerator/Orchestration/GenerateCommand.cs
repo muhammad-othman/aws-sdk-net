@@ -20,7 +20,6 @@ public class GenerateCommand
         {
             var discovery = new ServiceDiscovery(_options);
             var configBuilder = new DocFxConfigBuilder(_options, discovery);
-
             var intermediateFolder = Path.GetFullPath(_options.IntermediateFolder);
 
             if (_options.Clean && Directory.Exists(intermediateFolder))
@@ -42,16 +41,21 @@ public class GenerateCommand
 
             configBuilder.WriteFilterConfig(intermediateFolder);
 
-            // Phase 1: Generate metadata (DLL → YAML)
-            await GenerateMetadataAsync(services, configBuilder, intermediateFolder);
+            // Phase 1: Generate metadata with incremental + parallel support
+            var manifest = new IncrementalManifest(_options);
+            var servicesToGenerate = FilterChangedServices(services, manifest);
+            await GenerateMetadataAsync(servicesToGenerate, discovery, intermediateFolder);
+            foreach (var svc in servicesToGenerate)
+                manifest.RecordService(svc);
+            manifest.Save();
 
-            // Phase 2: Pre-process examples (extract code samples → overwrite .md files)
+            // Phase 2: Pre-process examples
             PreProcessExamples(services);
 
-            // Phase 3: Post-process YAML (inject platform availability + async notes)
-            PostProcessMetadata(services);
+            // Phase 3: Post-process YAML (platform availability + async notes)
+            PostProcessMetadata(servicesToGenerate);
 
-            // Phase 3: Build documentation (YAML → HTML)
+            // Phase 4: Build documentation (YAML → HTML)
             await BuildDocumentationAsync(configBuilder, intermediateFolder);
 
             return 0;
@@ -65,6 +69,71 @@ public class GenerateCommand
         }
     }
 
+    private List<ServiceInfo> FilterChangedServices(List<ServiceInfo> services, IncrementalManifest manifest)
+    {
+        if (_options.Clean)
+            return services;
+
+        var changed = new List<ServiceInfo>();
+        var skipped = 0;
+
+        foreach (var service in services)
+        {
+            if (manifest.HasServiceChanged(service))
+                changed.Add(service);
+            else
+                skipped++;
+        }
+
+        if (skipped > 0)
+            Console.WriteLine($"  Skipping {skipped} unchanged services (incremental build).");
+
+        if (changed.Count > 0)
+            Console.WriteLine($"  {changed.Count} services need metadata regeneration.");
+
+        return changed;
+    }
+
+    private async Task GenerateMetadataAsync(
+        List<ServiceInfo> services,
+        ServiceDiscovery discovery,
+        string intermediateFolder)
+    {
+        if (services.Count == 0)
+        {
+            Console.WriteLine("Metadata up-to-date, skipping generation.");
+            return;
+        }
+
+        Console.WriteLine($"Generating metadata for {services.Count} services...");
+
+        if (services.Count > _options.BatchThreshold && _options.MaxParallelism > 1)
+        {
+            var runner = new ParallelMetadataRunner(_options, discovery);
+            await runner.RunAsync(services, intermediateFolder);
+        }
+        else
+        {
+            await GenerateMetadataSequentialAsync(services, discovery, intermediateFolder);
+        }
+    }
+
+    private async Task GenerateMetadataSequentialAsync(
+        List<ServiceInfo> services,
+        ServiceDiscovery discovery,
+        string intermediateFolder)
+    {
+        var configBuilder = new DocFxConfigBuilder(_options, discovery);
+        var configJson = configBuilder.BuildMetadataConfig(services, intermediateFolder);
+        var configPath = Path.Combine(intermediateFolder, "docfx-metadata.json");
+        await File.WriteAllTextAsync(configPath, configJson);
+
+        if (_options.Verbose)
+            Console.WriteLine($"  Metadata config written to: {configPath}");
+
+        await RunDocfxCommandAsync("metadata", configPath);
+    }
+
     private void PreProcessExamples(List<ServiceInfo> services)
     {
         Console.WriteLine("Pre-processing code examples...");
@@ -74,6 +143,8 @@ public class GenerateCommand
 
     private void PostProcessMetadata(List<ServiceInfo> services)
     {
+        if (services.Count == 0) return;
+
         Console.WriteLine("Post-processing metadata (platform availability + async notes)...");
         var injector = new PlatformAvailabilityInjector(_options);
 
@@ -87,66 +158,6 @@ public class GenerateCommand
         Console.WriteLine("Post-processing complete.");
     }
 
-    private async Task GenerateMetadataAsync(
-        List<ServiceInfo> services,
-        DocFxConfigBuilder configBuilder,
-        string intermediateFolder)
-    {
-        Console.WriteLine($"Generating metadata for {services.Count} services...");
-
-        if (services.Count > _options.BatchThreshold && _options.MaxParallelism > 1)
-        {
-            await GenerateMetadataParallelAsync(services, configBuilder, intermediateFolder);
-        }
-        else
-        {
-            await GenerateMetadataSequentialAsync(services, configBuilder, intermediateFolder);
-        }
-    }
-
-    private async Task GenerateMetadataSequentialAsync(
-        List<ServiceInfo> services,
-        DocFxConfigBuilder configBuilder,
-        string intermediateFolder)
-    {
-        var configJson = configBuilder.BuildMetadataConfig(services, intermediateFolder);
-        var configPath = Path.Combine(intermediateFolder, "docfx-metadata.json");
-        await File.WriteAllTextAsync(configPath, configJson);
-
-        if (_options.Verbose)
-            Console.WriteLine($"Metadata config written to: {configPath}");
-
-        await RunDocfxMetadataAsync(configPath);
-    }
-
-    private async Task GenerateMetadataParallelAsync(
-        List<ServiceInfo> services,
-        DocFxConfigBuilder configBuilder,
-        string intermediateFolder)
-    {
-        var batchCount = Math.Min(_options.MaxParallelism, services.Count);
-        var batches = PartitionServices(services, batchCount);
-
-        Console.WriteLine($"Splitting into {batches.Count} parallel batches ({services.Count} services total)");
-
-        var tasks = new List<Task>();
-        for (int i = 0; i < batches.Count; i++)
-        {
-            var batch = batches[i];
-            var batchConfigJson = configBuilder.BuildMetadataConfig(batch, intermediateFolder);
-            var batchConfigPath = Path.Combine(intermediateFolder, $"docfx-batch-{i}.json");
-            await File.WriteAllTextAsync(batchConfigPath, batchConfigJson);
-
-            if (_options.Verbose)
-                Console.WriteLine($"  Batch {i}: {batch.Count} services");
-
-            tasks.Add(RunDocfxMetadataAsync(batchConfigPath));
-        }
-
-        await Task.WhenAll(tasks);
-        Console.WriteLine("All metadata batches completed.");
-    }
-
     private async Task BuildDocumentationAsync(DocFxConfigBuilder configBuilder, string intermediateFolder)
     {
         Console.WriteLine("Building documentation (YAML → HTML)...");
@@ -156,16 +167,11 @@ public class GenerateCommand
         await File.WriteAllTextAsync(buildConfigPath, buildConfigJson);
 
         if (_options.Verbose)
-            Console.WriteLine($"Build config written to: {buildConfigPath}");
+            Console.WriteLine($"  Build config written to: {buildConfigPath}");
 
         await RunDocfxCommandAsync("build", buildConfigPath);
 
         Console.WriteLine($"Documentation built successfully to: {_options.OutputFolder}");
-    }
-
-    private async Task RunDocfxMetadataAsync(string configPath)
-    {
-        await RunDocfxCommandAsync("metadata", configPath);
     }
 
     private async Task RunDocfxCommandAsync(string command, string configPath)
@@ -221,17 +227,5 @@ public class GenerateCommand
             return toolsPathUnix;
 
         return "docfx";
-    }
-
-    private static List<List<ServiceInfo>> PartitionServices(List<ServiceInfo> services, int batchCount)
-    {
-        var batches = new List<List<ServiceInfo>>();
-        for (int i = 0; i < batchCount; i++)
-            batches.Add(new List<ServiceInfo>());
-
-        for (int i = 0; i < services.Count; i++)
-            batches[i % batchCount].Add(services[i]);
-
-        return batches;
     }
 }
