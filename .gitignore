@@ -74,3 +74,9 @@ sdk/test/ProtocolTests/Generated/**/build-info
 #compatibility tests
 sdk/test/CompatibilityTests/DownloadedDlls/
 .DS_Store
+
+#############################
+# DocFX Generator output
+#############################
+docgenerator/_intermediate/
+docgenerator/_site/

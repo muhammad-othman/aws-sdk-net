@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find /c/repos/aws-sdk-net-docfx/docgenerator/SDKDocGenerator* -type f -name \"*.cs\")",
+      "Allow reading files in the current repo",
+      "WebFetch(domain:dotnet.github.io)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:www.nuget.org)",
+      "Bash(dotnet add *)",
+      "Bash(dotnet build *)",
+      "Bash(dotnet list *)",
+      "Bash(dotnet run *)"
+    ]
+  }
+}
