@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using DocFxGenerator.Configuration;
 using DocFxGenerator.PostProcessing;
+using DocFxGenerator.Preprocessing;
 
 namespace DocFxGenerator.Orchestration;
 
@@ -44,7 +45,10 @@ public class GenerateCommand
             // Phase 1: Generate metadata (DLL → YAML)
             await GenerateMetadataAsync(services, configBuilder, intermediateFolder);
 
-            // Phase 2: Post-process YAML (inject platform availability + async notes)
+            // Phase 2: Pre-process examples (extract code samples → overwrite .md files)
+            PreProcessExamples(services);
+
+            // Phase 3: Post-process YAML (inject platform availability + async notes)
             PostProcessMetadata(services);
 
             // Phase 3: Build documentation (YAML → HTML)
@@ -59,6 +63,13 @@ public class GenerateCommand
                 Console.Error.WriteLine(ex.StackTrace);
             return 1;
         }
+    }
+
+    private void PreProcessExamples(List<ServiceInfo> services)
+    {
+        Console.WriteLine("Pre-processing code examples...");
+        var merger = new SamplesMerger(_options);
+        merger.GenerateOverwriteFiles(services);
     }
 
     private void PostProcessMetadata(List<ServiceInfo> services)
