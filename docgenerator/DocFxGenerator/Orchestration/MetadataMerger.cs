@@ -27,7 +27,11 @@ public class MetadataMerger
             return;
 
         var intermediateFullPath = Path.GetFullPath(intermediateFolder);
-        var isFirst = true;
+        var primaryFramework = _options.TargetFrameworks[0];
+        var secondaryFrameworks = _options.TargetFrameworks[1..];
+
+        // Prepare per-framework service lists and temp dirs
+        var frameworkTasks = new List<(string framework, List<ServiceInfo> services, string outputDir)>();
 
         foreach (var framework in _options.TargetFrameworks)
         {
@@ -38,28 +42,40 @@ public class MetadataMerger
             if (frameworkServices.Count == 0)
                 continue;
 
-            Console.WriteLine($"  Processing {framework} ({frameworkServices.Count} services)...");
+            var outputDir = framework == primaryFramework
+                ? intermediateFullPath
+                : Path.Combine(intermediateFullPath, $"_temp_{framework}");
 
-            if (isFirst)
+            if (framework != primaryFramework)
+                Directory.CreateDirectory(outputDir);
+
+            frameworkTasks.Add((framework, frameworkServices, outputDir));
+            Console.WriteLine($"  {framework}: {frameworkServices.Count} services");
+        }
+
+        // Generate ALL frameworks in parallel
+        Console.WriteLine($"  Generating all {frameworkTasks.Count} frameworks in parallel...");
+        var generationTasks = frameworkTasks.Select(ft =>
+            GenerateMetadataForFrameworkAsync(ft.services, ft.framework, ft.outputDir, intermediateFullPath)
+        ).ToList();
+
+        await Task.WhenAll(generationTasks);
+
+        // Merge secondary frameworks into primary (fast — just YAML manipulation)
+        Console.WriteLine("  Merging framework-specific members...");
+        foreach (var (framework, frameworkServices, outputDir) in frameworkTasks)
+        {
+            if (framework == primaryFramework)
+                continue;
+
+            try
             {
-                await GenerateMetadataForFrameworkAsync(frameworkServices, framework, intermediateFullPath, intermediateFullPath);
-                isFirst = false;
+                MergeFrameworkOutput(frameworkServices, framework, intermediateFullPath, outputDir);
             }
-            else
+            finally
             {
-                var tempOutput = Path.Combine(intermediateFullPath, $"_temp_{framework}");
-                Directory.CreateDirectory(tempOutput);
-
-                try
-                {
-                    await GenerateMetadataForFrameworkAsync(frameworkServices, framework, tempOutput, intermediateFullPath);
-                    MergeFrameworkOutput(frameworkServices, framework, intermediateFullPath, tempOutput);
-                }
-                finally
-                {
-                    if (Directory.Exists(tempOutput))
-                        Directory.Delete(tempOutput, recursive: true);
-                }
+                if (Directory.Exists(outputDir))
+                    Directory.Delete(outputDir, recursive: true);
             }
         }
     }
