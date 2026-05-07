@@ -81,7 +81,7 @@ public class DocFxConfigBuilder
         File.WriteAllText(filterPath, filterContent);
     }
 
-    public string BuildBatchConfig(string intermediateFolder, List<ServiceInfo> batch, string xrefmapPath, int batchIndex)
+    public string BuildBatchConfig(string intermediateFolder, List<ServiceInfo> batch, string xrefmapPath, int batchIndex, string outputDir)
     {
         var contentFiles = batch
             .SelectMany(s => new[] { $"api/{s.Name}/**/*.yml", $"api/{s.Name}/toc.yml" })
@@ -112,7 +112,7 @@ public class DocFxConfigBuilder
                 },
                 xref = new[] { xrefmapPath.Replace('\\', '/') },
                 template = new[] { "default", "modern", GetTemplatePath() },
-                dest = _options.OutputFolder,
+                dest = outputDir,
                 disableGitFeatures = true
             }
         };

@@ -245,20 +245,35 @@ public class GenerateCommand
         GenerateCoreXrefmap(intermediateFolder, xrefmapPath);
 
         // Partition services into N batches and build in parallel
+        // Each batch writes to its own temp output dir to avoid file lock conflicts (xrefmap.yml)
         var batchCount = Math.Min(_options.MaxParallelism, Math.Max(1, servicesToBuild.Count));
         var batches = Partition(servicesToBuild, batchCount);
+        var batchOutputDirs = new List<string>();
 
         Console.WriteLine($"  Building {servicesToBuild.Count} services in {batches.Count} parallel batch processes...");
 
         var tasks = batches.Select((batch, i) =>
         {
-            var configJson = configBuilder.BuildBatchConfig(intermediateFolder, batch, xrefmapPath, i);
+            var batchOutputDir = Path.Combine(intermediateFolder, $"_build_output_{i}");
+            Directory.CreateDirectory(batchOutputDir);
+            lock (batchOutputDirs) batchOutputDirs.Add(batchOutputDir);
+
+            var configJson = configBuilder.BuildBatchConfig(intermediateFolder, batch, xrefmapPath, i, batchOutputDir);
             var configPath = Path.Combine(intermediateFolder, $"docfx-build-batch-{i}.json");
             File.WriteAllText(configPath, configJson);
             return RunDocfxCommandAsync("build", configPath);
         }).ToList();
 
         await Task.WhenAll(tasks);
+
+        // Merge batch outputs into final _site/
+        Console.WriteLine("  Merging batch outputs...");
+        Directory.CreateDirectory(_options.OutputFolder);
+        foreach (var batchDir in batchOutputDirs)
+        {
+            MergeDirectory(batchDir, _options.OutputFolder);
+            Directory.Delete(batchDir, recursive: true);
+        }
 
         // Build root content (toc, index page) separately
         var rootConfigJson = configBuilder.BuildRootConfig(intermediateFolder, xrefmapPath);
@@ -299,6 +314,43 @@ public class GenerateCommand
 
         File.WriteAllText(xrefmapPath, sb.ToString());
         Console.WriteLine($"  Generated Core xrefmap for cross-service references");
+    }
+
+    private static void MergeDirectory(string sourceDir, string destDir)
+    {
+        // Move top-level subdirectories (api/ServiceName, public, etc.) — fast rename
+        foreach (var dir in Directory.GetDirectories(sourceDir))
+        {
+            var dirName = Path.GetFileName(dir);
+            var destSubDir = Path.Combine(destDir, dirName);
+
+            if (!Directory.Exists(destSubDir))
+            {
+                Directory.Move(dir, destSubDir);
+            }
+            else
+            {
+                // Merge into existing directory
+                foreach (var subDir in Directory.GetDirectories(dir, "*", SearchOption.AllDirectories))
+                {
+                    Directory.CreateDirectory(Path.Combine(destDir, Path.GetRelativePath(sourceDir, subDir)));
+                }
+                foreach (var file in Directory.GetFiles(dir, "*", SearchOption.AllDirectories))
+                {
+                    var destFile = Path.Combine(destDir, Path.GetRelativePath(sourceDir, file));
+                    File.Move(file, destFile, overwrite: true);
+                }
+            }
+        }
+
+        // Move top-level files (skip xrefmap.yml)
+        foreach (var file in Directory.GetFiles(sourceDir))
+        {
+            if (Path.GetFileName(file) == "xrefmap.yml")
+                continue;
+            var destFile = Path.Combine(destDir, Path.GetFileName(file));
+            File.Move(file, destFile, overwrite: true);
+        }
     }
 
     private static List<List<ServiceInfo>> Partition(List<ServiceInfo> services, int batchCount)
