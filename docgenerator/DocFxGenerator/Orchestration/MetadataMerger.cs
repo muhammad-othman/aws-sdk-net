@@ -211,24 +211,23 @@ public class MetadataMerger
     private void MergeFrameworkOutput(
         List<ServiceInfo> services, string framework, string intermediateFolder, string tempOutput)
     {
-        foreach (var service in services)
+        var mergedFiles = 0;
+        var skippedFiles = 0;
+
+        Parallel.ForEach(services, new ParallelOptions { MaxDegreeOfParallelism = _options.MaxParallelism }, service =>
         {
             var primaryApiFolder = Path.Combine(intermediateFolder, "api", service.Name);
             var secondaryApiFolder = Path.Combine(tempOutput, "api", service.Name);
 
             if (!Directory.Exists(secondaryApiFolder))
-                continue;
+                return;
 
             if (!Directory.Exists(primaryApiFolder))
             {
-                // Service only exists in this framework — copy everything
                 Directory.CreateDirectory(primaryApiFolder);
                 foreach (var file in Directory.GetFiles(secondaryApiFolder))
                     File.Copy(file, Path.Combine(primaryApiFolder, Path.GetFileName(file)));
-
-                if (_options.Verbose)
-                    Console.WriteLine($"    Added service {service.Name} from {framework}");
-                continue;
+                return;
             }
 
             var secondaryFiles = Directory.GetFiles(secondaryApiFolder, "*.yml");
@@ -245,18 +244,43 @@ public class MetadataMerger
 
                 var primaryFile = Path.Combine(primaryApiFolder, fileName);
 
-                if (File.Exists(primaryFile))
-                {
-                    MergeTypeYaml(primaryFile, secondaryFile);
-                }
-                else
+                if (!File.Exists(primaryFile))
                 {
                     File.Copy(secondaryFile, primaryFile);
-                    if (_options.Verbose)
-                        Console.WriteLine($"    Added {fileName} from {framework}");
+                    Interlocked.Increment(ref mergedFiles);
+                    continue;
                 }
+
+                // Fast check: extract UIDs from secondary and see if any are new
+                var secondaryUids = ExtractUidsFromFile(secondaryFile);
+                var primaryUids = ExtractUidsFromFile(primaryFile);
+
+                if (secondaryUids.IsSubsetOf(primaryUids))
+                {
+                    Interlocked.Increment(ref skippedFiles);
+                    continue;
+                }
+
+                // Only do full YAML parse+merge if there are genuinely new UIDs
+                MergeTypeYaml(primaryFile, secondaryFile);
+                Interlocked.Increment(ref mergedFiles);
             }
+        });
+
+        Console.WriteLine($"    [{framework}] Merge: {mergedFiles} files merged, {skippedFiles} skipped (no new members)");
+    }
+
+    private static HashSet<string> ExtractUidsFromFile(string filePath)
+    {
+        var uids = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var line in File.ReadLines(filePath))
+        {
+            if (line.StartsWith("- uid: "))
+                uids.Add(line["- uid: ".Length..].Trim());
+            else if (line.StartsWith("  uid: "))
+                uids.Add(line["  uid: ".Length..].Trim());
         }
+        return uids;
     }
 
     private void MergeTypeYaml(string primaryPath, string secondaryPath)
