@@ -53,7 +53,7 @@ public class GenerateCommand
             GenerateRootContent(services, intermediateFolder);
 
             // Phase 1: Generate metadata for all frameworks and merge unique members
-            var manifest = new IncrementalManifest(_options);
+            var manifest = new IncrementalManifest(_options, discovery);
             var servicesToGenerate = FilterChangedServices(services, manifest);
             var stepTimer = Stopwatch.StartNew();
             await GenerateMetadataAsync(servicesToGenerate, discovery, intermediateFolder);
@@ -70,7 +70,7 @@ public class GenerateCommand
 
             // Phase 3: Post-process YAML (platform availability + async notes)
             stepTimer.Restart();
-            PostProcessMetadata(servicesToGenerate);
+            PostProcessMetadata(servicesToGenerate, discovery);
             Console.WriteLine($"  Completed in {FormatElapsed(stepTimer.Elapsed)}");
 
             // Phase 4: Build documentation (YAML → HTML)
@@ -151,12 +151,12 @@ public class GenerateCommand
         merger.GenerateOverwriteFiles(services);
     }
 
-    private void PostProcessMetadata(List<ServiceInfo> services)
+    private void PostProcessMetadata(List<ServiceInfo> services, ServiceDiscovery discovery)
     {
         if (services.Count == 0) return;
 
         Console.WriteLine("Post-processing metadata (platform availability + async notes)...");
-        var injector = new PlatformAvailabilityInjector(_options);
+        var injector = new PlatformAvailabilityInjector(_options, discovery);
 
         foreach (var service in services)
         {

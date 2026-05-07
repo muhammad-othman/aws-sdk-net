@@ -70,19 +70,46 @@ public class MetadataMerger
         var frameworkPath = Path.Combine(_options.AssembliesRoot, framework).Replace('\\', '/');
         var filterPath = Path.Combine(intermediateFolder, "filterConfig.yml").Replace('\\', '/');
 
-        var metadata = services.Select(service => new
+        var baseReferences = _discovery.GetReferenceAssemblies(framework);
+
+        var metadata = services.Select(service =>
         {
-            src = new[]
+            string srcPath;
+            List<string> references;
+
+            if (service.IsExtension)
             {
-                new
+                var dllPath = _discovery.FindExtensionDllPath(service.Name, framework);
+                srcPath = Path.GetDirectoryName(dllPath)!.Replace('\\', '/');
+                // Extension subfolder has co-located dependencies — add them as references
+                references = Directory.GetFiles(Path.GetDirectoryName(dllPath)!, "*.dll")
+                    .Where(f => !Path.GetFileName(f).Equals($"AWSSDK.{service.Name}.dll", StringComparison.OrdinalIgnoreCase))
+                    .Select(f => f.Replace('\\', '/'))
+                    .ToList();
+                // Also add Core from the framework root
+                references.AddRange(baseReferences.Select(r => r.Replace('\\', '/')));
+            }
+            else
+            {
+                srcPath = frameworkPath;
+                references = baseReferences.Select(r => r.Replace('\\', '/')).ToList();
+            }
+
+            return new
+            {
+                src = new[]
                 {
-                    files = new[] { $"AWSSDK.{service.Name}.dll" },
-                    src = frameworkPath
-                }
-            },
-            dest = Path.Combine(tempOutput, "api", service.Name).Replace('\\', '/'),
-            filter = filterPath,
-            memberLayout = "SeparatePages"
+                    new
+                    {
+                        files = new[] { $"AWSSDK.{service.Name}.dll" },
+                        src = srcPath
+                    }
+                },
+                dest = Path.Combine(tempOutput, "api", service.Name).Replace('\\', '/'),
+                references = references.ToArray(),
+                filter = filterPath,
+                memberLayout = "SeparatePages"
+            };
         }).ToArray();
 
         var config = new { metadata };

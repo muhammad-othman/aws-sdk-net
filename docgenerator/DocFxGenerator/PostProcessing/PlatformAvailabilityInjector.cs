@@ -7,10 +7,12 @@ namespace DocFxGenerator.PostProcessing;
 public class PlatformAvailabilityInjector
 {
     private readonly GeneratorOptions _options;
+    private readonly ServiceDiscovery _discovery;
 
-    public PlatformAvailabilityInjector(GeneratorOptions options)
+    public PlatformAvailabilityInjector(GeneratorOptions options, ServiceDiscovery discovery)
     {
         _options = options;
+        _discovery = discovery;
     }
 
     public void ProcessService(ServiceInfo service)
@@ -252,7 +254,17 @@ public class PlatformAvailabilityInjector
         var platformMembers = new Dictionary<string, HashSet<string>>();
         foreach (var framework in _options.TargetFrameworks)
         {
-            var xmlPath = Path.Combine(_options.AssembliesRoot, framework, $"AWSSDK.{service.Name}.xml");
+            string xmlPath;
+            if (service.IsExtension)
+            {
+                var dllPath = _discovery.FindExtensionDllPath(service.Name, framework);
+                if (dllPath == null) continue;
+                xmlPath = Path.ChangeExtension(dllPath, ".xml");
+            }
+            else
+            {
+                xmlPath = Path.Combine(_options.AssembliesRoot, framework, $"AWSSDK.{service.Name}.xml");
+            }
             if (!File.Exists(xmlPath))
                 continue;
             platformMembers[framework] = ParseXmlDocMembers(xmlPath);

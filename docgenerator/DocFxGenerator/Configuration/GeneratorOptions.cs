@@ -13,9 +13,7 @@ public class GeneratorOptions
     public int BatchThreshold { get; init; } = 20;
 
     public string IntermediateFolder => Path.Combine(
-        Path.GetDirectoryName(AssembliesRoot)!,
-        "..",
-        "docgenerator",
+        Path.GetDirectoryName(OutputFolder)!,
         "_intermediate");
 
     public bool GenerateAllServices => Services.Length == 1 && Services[0] == "*";

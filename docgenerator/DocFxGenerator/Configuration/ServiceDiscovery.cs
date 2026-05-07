@@ -19,29 +19,24 @@ public class ServiceDiscovery
             if (!Directory.Exists(frameworkPath))
                 continue;
 
+            // Scan top-level DLLs
             var dlls = Directory.GetFiles(frameworkPath, "AWSSDK.*.dll")
                 .Where(f => !IsExcludedAssembly(Path.GetFileName(f)))
                 .OrderBy(f => f);
 
             foreach (var dllPath in dlls)
+                TryAddService(dllPath, serviceMap, isExtension: false);
+
+            // Scan extensions subfolders
+            var extensionsPath = Path.Combine(frameworkPath, "extensions");
+            if (Directory.Exists(extensionsPath))
             {
-                var fileName = Path.GetFileNameWithoutExtension(dllPath);
-                var serviceName = ExtractServiceName(fileName);
-                if (serviceName == null) continue;
-
-                var xmlPath = Path.ChangeExtension(dllPath, ".xml");
-                if (!File.Exists(xmlPath)) continue;
-
-                if (serviceMap.ContainsKey(serviceName))
-                    continue;
-
-                serviceMap[serviceName] = new ServiceInfo
+                foreach (var extDir in Directory.GetDirectories(extensionsPath))
                 {
-                    Name = serviceName,
-                    DllPath = dllPath,
-                    XmlPath = xmlPath,
-                    FrameworkAvailability = GetFrameworkAvailability(serviceName)
-                };
+                    var extDlls = Directory.GetFiles(extDir, "AWSSDK.*.dll").OrderBy(f => f);
+                    foreach (var dllPath in extDlls)
+                        TryAddService(dllPath, serviceMap, isExtension: true);
+                }
             }
         }
 
@@ -66,8 +61,33 @@ public class ServiceDiscovery
         return services;
     }
 
+    private void TryAddService(string dllPath, Dictionary<string, ServiceInfo> serviceMap, bool isExtension)
+    {
+        var fileName = Path.GetFileNameWithoutExtension(dllPath);
+        var serviceName = ExtractServiceName(fileName, isExtension);
+        if (serviceName == null) return;
+
+        var xmlPath = Path.ChangeExtension(dllPath, ".xml");
+        if (!File.Exists(xmlPath)) return;
+
+        if (serviceMap.ContainsKey(serviceName))
+            return;
+
+        serviceMap[serviceName] = new ServiceInfo
+        {
+            Name = serviceName,
+            DllPath = dllPath,
+            XmlPath = xmlPath,
+            IsExtension = isExtension,
+            FrameworkAvailability = GetFrameworkAvailability(serviceName, isExtension)
+        };
+    }
+
     public string? GetDllPathForFramework(ServiceInfo service, string framework)
     {
+        if (service.IsExtension)
+            return FindExtensionDllPath(service.Name, framework);
+
         var dllPath = Path.Combine(_options.AssembliesRoot, framework, $"AWSSDK.{service.Name}.dll");
         return File.Exists(dllPath) ? dllPath : null;
     }
@@ -81,29 +101,80 @@ public class ServiceDiscovery
         if (File.Exists(coreRef))
             references.Add(coreRef);
 
+        // CborProtocol can be at root or in extensions subfolder
         var cborRef = Path.Combine(frameworkPath, "AWSSDK.Extensions.CborProtocol.dll");
         if (File.Exists(cborRef))
+        {
             references.Add(cborRef);
+        }
+        else
+        {
+            var extCborPath = FindExtensionDllPath("Extensions.CborProtocol", framework);
+            if (extCborPath != null)
+                references.Add(extCborPath);
+        }
 
+        // System.Formats.Cbor can be at root or co-located with CborProtocol extension
         var systemCborRef = Path.Combine(frameworkPath, "System.Formats.Cbor.dll");
         if (File.Exists(systemCborRef))
+        {
             references.Add(systemCborRef);
+        }
+        else
+        {
+            var extCborDir = FindExtensionDllPath("Extensions.CborProtocol", framework);
+            if (extCborDir != null)
+            {
+                var colocated = Path.Combine(Path.GetDirectoryName(extCborDir)!, "System.Formats.Cbor.dll");
+                if (File.Exists(colocated))
+                    references.Add(colocated);
+            }
+        }
 
         return references;
     }
 
-    private Dictionary<string, bool> GetFrameworkAvailability(string serviceName)
+    private Dictionary<string, bool> GetFrameworkAvailability(string serviceName, bool isExtension)
     {
         var availability = new Dictionary<string, bool>();
         foreach (var framework in _options.TargetFrameworks)
         {
-            var dllPath = Path.Combine(_options.AssembliesRoot, framework, $"AWSSDK.{serviceName}.dll");
-            availability[framework] = File.Exists(dllPath);
+            if (isExtension)
+            {
+                var extensionsPath = Path.Combine(_options.AssembliesRoot, framework, "extensions");
+                var found = Directory.Exists(extensionsPath) &&
+                    Directory.GetDirectories(extensionsPath)
+                        .Any(d => File.Exists(Path.Combine(d, $"AWSSDK.{serviceName}.dll")));
+                availability[framework] = found;
+            }
+            else
+            {
+                var dllPath = Path.Combine(_options.AssembliesRoot, framework, $"AWSSDK.{serviceName}.dll");
+                availability[framework] = File.Exists(dllPath);
+            }
         }
         return availability;
     }
 
-    private static string? ExtractServiceName(string fileName)
+    /// <summary>
+    /// Finds the DLL path for an extension service in a given framework's extensions subfolders.
+    /// </summary>
+    public string? FindExtensionDllPath(string serviceName, string framework)
+    {
+        var extensionsPath = Path.Combine(_options.AssembliesRoot, framework, "extensions");
+        if (!Directory.Exists(extensionsPath))
+            return null;
+
+        foreach (var dir in Directory.GetDirectories(extensionsPath))
+        {
+            var dllPath = Path.Combine(dir, $"AWSSDK.{serviceName}.dll");
+            if (File.Exists(dllPath))
+                return dllPath;
+        }
+        return null;
+    }
+
+    private static string? ExtractServiceName(string fileName, bool isExtension = false)
     {
         const string prefix = "AWSSDK.";
         if (!fileName.StartsWith(prefix))
@@ -112,9 +183,9 @@ public class ServiceDiscovery
         var serviceName = fileName[prefix.Length..];
 
         if (serviceName == "Core")
-            return serviceName;
+            return isExtension ? null : serviceName;
 
-        if (serviceName.StartsWith("Extensions."))
+        if (serviceName.StartsWith("Extensions.") && !isExtension)
             return null;
 
         return serviceName;
@@ -139,5 +210,6 @@ public class ServiceInfo
     public required string Name { get; init; }
     public required string DllPath { get; init; }
     public required string XmlPath { get; init; }
+    public required bool IsExtension { get; init; }
     public required Dictionary<string, bool> FrameworkAvailability { get; init; }
 }

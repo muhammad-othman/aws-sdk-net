@@ -10,12 +10,14 @@ public class IncrementalManifest
     private const string ManifestFileName = ".generation-manifest.json";
 
     private readonly GeneratorOptions _options;
+    private readonly ServiceDiscovery _discovery;
     private readonly string _manifestPath;
     private ManifestData _data;
 
-    public IncrementalManifest(GeneratorOptions options)
+    public IncrementalManifest(GeneratorOptions options, ServiceDiscovery discovery)
     {
         _options = options;
+        _discovery = discovery;
         _manifestPath = Path.Combine(Path.GetFullPath(options.IntermediateFolder), ManifestFileName);
         _data = Load();
     }
@@ -67,21 +69,20 @@ public class IncrementalManifest
         using var sha = SHA256.Create();
         using var stream = new MemoryStream();
 
-        // Hash DLLs and XML docs from all available frameworks
         foreach (var framework in _options.TargetFrameworks)
         {
-            var dllPath = Path.Combine(_options.AssembliesRoot, framework, $"AWSSDK.{service.Name}.dll");
-            if (File.Exists(dllPath))
+            var dllPath = _discovery.GetDllPathForFramework(service, framework);
+            if (dllPath != null && File.Exists(dllPath))
             {
                 var dllBytes = File.ReadAllBytes(dllPath);
                 stream.Write(dllBytes);
-            }
 
-            var xmlPath = Path.ChangeExtension(dllPath, ".xml");
-            if (File.Exists(xmlPath))
-            {
-                var xmlBytes = File.ReadAllBytes(xmlPath);
-                stream.Write(xmlBytes);
+                var xmlPath = Path.ChangeExtension(dllPath, ".xml");
+                if (File.Exists(xmlPath))
+                {
+                    var xmlBytes = File.ReadAllBytes(xmlPath);
+                    stream.Write(xmlBytes);
+                }
             }
         }
 
