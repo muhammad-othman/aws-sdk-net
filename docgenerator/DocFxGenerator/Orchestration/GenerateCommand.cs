@@ -240,28 +240,25 @@ public class GenerateCommand
     {
         Console.WriteLine("Building documentation (YAML → HTML)...");
 
-        // Generate combined xrefmap for cross-service linking
-        var xrefmapPath = Path.Combine(intermediateFolder, "xrefmap-combined.yml");
-        GenerateCombinedXrefmap(intermediateFolder, xrefmapPath);
+        // Generate Core-only xrefmap (small — just the types all services inherit from)
+        var xrefmapPath = Path.Combine(intermediateFolder, "xrefmap-core.yml");
+        GenerateCoreXrefmap(intermediateFolder, xrefmapPath);
 
-        // Build per-service in parallel batches
+        // Partition services into N batches and build in parallel
         var batchCount = Math.Min(_options.MaxParallelism, Math.Max(1, servicesToBuild.Count));
         var batches = Partition(servicesToBuild, batchCount);
 
-        Console.WriteLine($"  Building {servicesToBuild.Count} services in {batches.Count} parallel batches...");
+        Console.WriteLine($"  Building {servicesToBuild.Count} services in {batches.Count} parallel batch processes...");
 
-        foreach (var batch in batches)
+        var tasks = batches.Select((batch, i) =>
         {
-            var tasks = batch.Select(service =>
-            {
-                var configJson = configBuilder.BuildPerServiceConfig(intermediateFolder, service.Name, xrefmapPath);
-                var configPath = Path.Combine(intermediateFolder, $"docfx-build-{service.Name}.json");
-                File.WriteAllText(configPath, configJson);
-                return RunDocfxCommandAsync("build", configPath);
-            }).ToList();
+            var configJson = configBuilder.BuildBatchConfig(intermediateFolder, batch, xrefmapPath, i);
+            var configPath = Path.Combine(intermediateFolder, $"docfx-build-batch-{i}.json");
+            File.WriteAllText(configPath, configJson);
+            return RunDocfxCommandAsync("build", configPath);
+        }).ToList();
 
-            await Task.WhenAll(tasks);
-        }
+        await Task.WhenAll(tasks);
 
         // Build root content (toc, index page) separately
         var rootConfigJson = configBuilder.BuildRootConfig(intermediateFolder, xrefmapPath);
@@ -274,19 +271,16 @@ public class GenerateCommand
         Console.WriteLine($"Documentation built successfully to: {_options.OutputFolder}");
     }
 
-    private void GenerateCombinedXrefmap(string intermediateFolder, string xrefmapPath)
+    private void GenerateCoreXrefmap(string intermediateFolder, string xrefmapPath)
     {
         var sb = new System.Text.StringBuilder();
         sb.AppendLine("### YamlMime:XRefMap");
         sb.AppendLine("references:");
 
-        var apiFolder = Path.Combine(intermediateFolder, "api");
-        if (!Directory.Exists(apiFolder)) return;
-
-        foreach (var serviceDir in Directory.GetDirectories(apiFolder))
+        var coreApiFolder = Path.Combine(intermediateFolder, "api", "Core");
+        if (Directory.Exists(coreApiFolder))
         {
-            var serviceName = Path.GetFileName(serviceDir);
-            foreach (var ymlFile in Directory.GetFiles(serviceDir, "*.yml"))
+            foreach (var ymlFile in Directory.GetFiles(coreApiFolder, "*.yml"))
             {
                 if (Path.GetFileName(ymlFile) == "toc.yml") continue;
 
@@ -295,19 +289,16 @@ public class GenerateCommand
                     if (line.StartsWith("- uid: "))
                     {
                         var uid = line["- uid: ".Length..].Trim();
-                        var href = $"api/{serviceName}/{uid}.html";
                         sb.AppendLine($"- uid: {uid}");
                         sb.AppendLine($"  name: {uid}");
-                        sb.AppendLine($"  href: {href}");
+                        sb.AppendLine($"  href: api/Core/{uid}.html");
                     }
                 }
             }
         }
 
         File.WriteAllText(xrefmapPath, sb.ToString());
-
-        if (_options.Verbose)
-            Console.WriteLine($"  Generated combined xrefmap with cross-service references");
+        Console.WriteLine($"  Generated Core xrefmap for cross-service references");
     }
 
     private static List<List<ServiceInfo>> Partition(List<ServiceInfo> services, int batchCount)

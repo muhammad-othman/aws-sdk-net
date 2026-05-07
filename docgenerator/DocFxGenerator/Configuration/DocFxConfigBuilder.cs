@@ -81,19 +81,27 @@ public class DocFxConfigBuilder
         File.WriteAllText(filterPath, filterContent);
     }
 
-    public string BuildPerServiceConfig(string intermediateFolder, string serviceName, string xrefmapPath)
+    public string BuildBatchConfig(string intermediateFolder, List<ServiceInfo> batch, string xrefmapPath, int batchIndex)
     {
+        var contentFiles = batch
+            .SelectMany(s => new[] { $"api/{s.Name}/**/*.yml", $"api/{s.Name}/toc.yml" })
+            .ToArray();
+
+        var overwriteFiles = batch
+            .Select(s => $"overwrite/{s.Name}/**/*.md")
+            .ToArray();
+
         var config = new
         {
             build = new
             {
                 content = new[]
                 {
-                    new { files = new[] { $"api/{serviceName}/**/*.yml", $"api/{serviceName}/toc.yml" }, src = "." }
+                    new { files = contentFiles, src = "." }
                 },
                 overwrite = new[]
                 {
-                    new { files = new[] { $"overwrite/{serviceName}/**/*.md" }, src = "." }
+                    new { files = overwriteFiles, src = "." }
                 },
                 globalMetadata = new Dictionary<string, object>
                 {
