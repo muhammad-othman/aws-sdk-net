@@ -73,9 +73,10 @@ public class GenerateCommand
             PostProcessMetadata(servicesToGenerate, discovery);
             Console.WriteLine($"  Completed in {FormatElapsed(stepTimer.Elapsed)}");
 
-            // Phase 4: Build documentation (YAML → HTML)
+            // Phase 4: Build documentation (YAML → HTML) — only changed services
+            var servicesToBuild = FilterServicesToBuild(services, servicesToGenerate);
             stepTimer.Restart();
-            await BuildDocumentationAsync(configBuilder, intermediateFolder);
+            await BuildDocumentationAsync(configBuilder, intermediateFolder, servicesToBuild);
             Console.WriteLine($"  Completed in {FormatElapsed(stepTimer.Elapsed)}");
 
             // Phase 5: Generate redirect rules
@@ -125,6 +126,32 @@ public class GenerateCommand
             Console.WriteLine($"  {changed.Count} services need metadata regeneration.");
 
         return changed;
+    }
+
+    private List<ServiceInfo> FilterServicesToBuild(List<ServiceInfo> allServices, List<ServiceInfo> changedServices)
+    {
+        if (_options.Clean)
+            return allServices;
+
+        // Only rebuild services that had metadata regenerated or don't have HTML output yet
+        var toBuild = new List<ServiceInfo>();
+        var skipped = 0;
+
+        foreach (var service in allServices)
+        {
+            var outputDir = Path.Combine(_options.OutputFolder, "api", service.Name);
+            var wasRegenerated = changedServices.Any(s => s.Name == service.Name);
+
+            if (wasRegenerated || !Directory.Exists(outputDir))
+                toBuild.Add(service);
+            else
+                skipped++;
+        }
+
+        if (skipped > 0)
+            Console.WriteLine($"  Skipping build for {skipped} unchanged services (HTML already exists).");
+
+        return toBuild;
     }
 
     private async Task GenerateMetadataAsync(
@@ -208,22 +235,89 @@ public class GenerateCommand
             """.Replace("            ", ""));
     }
 
-    private async Task BuildDocumentationAsync(DocFxConfigBuilder configBuilder, string intermediateFolder)
+    private async Task BuildDocumentationAsync(
+        DocFxConfigBuilder configBuilder, string intermediateFolder, List<ServiceInfo> servicesToBuild)
     {
         Console.WriteLine("Building documentation (YAML → HTML)...");
 
-        var buildConfigJson = configBuilder.BuildFullConfig(intermediateFolder);
-        var buildConfigPath = Path.Combine(intermediateFolder, "docfx-build.json");
-        await File.WriteAllTextAsync(buildConfigPath, buildConfigJson);
+        // Generate combined xrefmap for cross-service linking
+        var xrefmapPath = Path.Combine(intermediateFolder, "xrefmap-combined.yml");
+        GenerateCombinedXrefmap(intermediateFolder, xrefmapPath);
 
-        if (_options.Verbose)
-            Console.WriteLine($"  Build config written to: {buildConfigPath}");
+        // Build per-service in parallel batches
+        var batchCount = Math.Min(_options.MaxParallelism, Math.Max(1, servicesToBuild.Count));
+        var batches = Partition(servicesToBuild, batchCount);
 
-        await RunDocfxCommandAsync("build", buildConfigPath);
+        Console.WriteLine($"  Building {servicesToBuild.Count} services in {batches.Count} parallel batches...");
+
+        foreach (var batch in batches)
+        {
+            var tasks = batch.Select(service =>
+            {
+                var configJson = configBuilder.BuildPerServiceConfig(intermediateFolder, service.Name, xrefmapPath);
+                var configPath = Path.Combine(intermediateFolder, $"docfx-build-{service.Name}.json");
+                File.WriteAllText(configPath, configJson);
+                return RunDocfxCommandAsync("build", configPath);
+            }).ToList();
+
+            await Task.WhenAll(tasks);
+        }
+
+        // Build root content (toc, index page) separately
+        var rootConfigJson = configBuilder.BuildRootConfig(intermediateFolder, xrefmapPath);
+        var rootConfigPath = Path.Combine(intermediateFolder, "docfx-build-root.json");
+        await File.WriteAllTextAsync(rootConfigPath, rootConfigJson);
+        await RunDocfxCommandAsync("build", rootConfigPath);
 
         WriteRootRedirect();
 
         Console.WriteLine($"Documentation built successfully to: {_options.OutputFolder}");
+    }
+
+    private void GenerateCombinedXrefmap(string intermediateFolder, string xrefmapPath)
+    {
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine("### YamlMime:XRefMap");
+        sb.AppendLine("references:");
+
+        var apiFolder = Path.Combine(intermediateFolder, "api");
+        if (!Directory.Exists(apiFolder)) return;
+
+        foreach (var serviceDir in Directory.GetDirectories(apiFolder))
+        {
+            var serviceName = Path.GetFileName(serviceDir);
+            foreach (var ymlFile in Directory.GetFiles(serviceDir, "*.yml"))
+            {
+                if (Path.GetFileName(ymlFile) == "toc.yml") continue;
+
+                foreach (var line in File.ReadLines(ymlFile))
+                {
+                    if (line.StartsWith("- uid: "))
+                    {
+                        var uid = line["- uid: ".Length..].Trim();
+                        var href = $"api/{serviceName}/{uid}.html";
+                        sb.AppendLine($"- uid: {uid}");
+                        sb.AppendLine($"  name: {uid}");
+                        sb.AppendLine($"  href: {href}");
+                    }
+                }
+            }
+        }
+
+        File.WriteAllText(xrefmapPath, sb.ToString());
+
+        if (_options.Verbose)
+            Console.WriteLine($"  Generated combined xrefmap with cross-service references");
+    }
+
+    private static List<List<ServiceInfo>> Partition(List<ServiceInfo> services, int batchCount)
+    {
+        var batches = new List<List<ServiceInfo>>();
+        for (int i = 0; i < batchCount; i++)
+            batches.Add(new List<ServiceInfo>());
+        for (int i = 0; i < services.Count; i++)
+            batches[i % batchCount].Add(services[i]);
+        return batches;
     }
 
     private void WriteRootRedirect()

@@ -19,7 +19,8 @@
       "Bash(grep -E \"\\\\.\\(json|xml|config\\)$\")",
       "Bash(xargs grep -l \"PrimaryFramework\\\\|GeneratorOptions\")",
       "Bash(~/.dotnet/tools/docfx build *)",
-      "Bash(grep 'name=\"M:Amazon.BedrockRuntime.AmazonBedrockRuntimeClient' /c/repos/aws-sdk-net-docfx/Deployment/assemblies/net8.0/AWSSDK.BedrockRuntime.xml | sort > /tmp/net8_methods.txt && grep 'name=\"M:Amazon.BedrockRuntime.AmazonBedrockRuntimeClient' /c/repos/aws-sdk-net-docfx/Deployment/assemblies/net472/AWSSDK.BedrockRuntime.xml | sort > /tmp/net472_methods.txt && diff /tmp/net472_methods.txt /tmp/net8_methods.txt)"
+      "Bash(grep 'name=\"M:Amazon.BedrockRuntime.AmazonBedrockRuntimeClient' /c/repos/aws-sdk-net-docfx/Deployment/assemblies/net8.0/AWSSDK.BedrockRuntime.xml | sort > /tmp/net8_methods.txt && grep 'name=\"M:Amazon.BedrockRuntime.AmazonBedrockRuntimeClient' /c/repos/aws-sdk-net-docfx/Deployment/assemblies/net472/AWSSDK.BedrockRuntime.xml | sort > /tmp/net472_methods.txt && diff /tmp/net472_methods.txt /tmp/net8_methods.txt)",
+      "Bash(xargs grep -l \"postprocess\\\\|split\\\\|separate\")"
     ],
     "additionalDirectories": [
       "\\tmp"

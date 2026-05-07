@@ -81,6 +81,72 @@ public class DocFxConfigBuilder
         File.WriteAllText(filterPath, filterContent);
     }
 
+    public string BuildPerServiceConfig(string intermediateFolder, string serviceName, string xrefmapPath)
+    {
+        var config = new
+        {
+            build = new
+            {
+                content = new[]
+                {
+                    new { files = new[] { $"api/{serviceName}/**/*.yml", $"api/{serviceName}/toc.yml" }, src = "." }
+                },
+                overwrite = new[]
+                {
+                    new { files = new[] { $"overwrite/{serviceName}/**/*.md" }, src = "." }
+                },
+                globalMetadata = new Dictionary<string, object>
+                {
+                    ["memberLayout"] = "SeparatePages",
+                    ["_appTitle"] = "AWS SDK for .NET API Reference",
+                    ["_enableSearch"] = false,
+                    ["_disableContribution"] = true
+                },
+                xref = new[] { xrefmapPath.Replace('\\', '/') },
+                template = new[] { "default", "modern", GetTemplatePath() },
+                dest = _options.OutputFolder,
+                disableGitFeatures = true
+            }
+        };
+
+        return JsonSerializer.Serialize(config, new JsonSerializerOptions
+        {
+            WriteIndented = true,
+            DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+        });
+    }
+
+    public string BuildRootConfig(string intermediateFolder, string xrefmapPath)
+    {
+        var config = new
+        {
+            build = new
+            {
+                content = new[]
+                {
+                    new { files = new[] { "toc.yml", "api/toc.yml", "api/index.md" }, src = "." }
+                },
+                globalMetadata = new Dictionary<string, object>
+                {
+                    ["_appTitle"] = "AWS SDK for .NET API Reference",
+                    ["_enableSearch"] = true
+                },
+                xref = new[] { xrefmapPath.Replace('\\', '/') },
+                template = new[] { "default", "modern", GetTemplatePath() },
+                dest = _options.OutputFolder,
+                disableGitFeatures = true
+            }
+        };
+
+        return JsonSerializer.Serialize(config, new JsonSerializerOptions
+        {
+            WriteIndented = true,
+            DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+        });
+    }
+
     private static string GetFilterConfigPath(string outputBasePath)
     {
         return Path.Combine(outputBasePath, "filterConfig.yml");

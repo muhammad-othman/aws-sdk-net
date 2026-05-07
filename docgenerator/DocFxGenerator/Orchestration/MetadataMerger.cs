@@ -67,9 +67,35 @@ public class MetadataMerger
     private async Task GenerateMetadataForFrameworkAsync(
         List<ServiceInfo> services, string framework, string tempOutput, string intermediateFolder)
     {
+        if (services.Count > _options.BatchThreshold && _options.MaxParallelism > 1)
+        {
+            var batchCount = Math.Min(_options.MaxParallelism, services.Count);
+            var batches = Partition(services, batchCount);
+
+            // if (_options.Verbose)
+            Console.WriteLine($"    [{framework}] Splitting into {batches.Count} parallel batches");
+
+            var tasks = new List<Task>();
+            for (int i = 0; i < batches.Count; i++)
+            {
+                var configPath = WriteMetadataConfigForBatch(batches[i], framework, tempOutput, intermediateFolder, i);
+                tasks.Add(RunDocfxMetadataAsync(configPath, $"{framework}/batch-{i}"));
+            }
+
+            await Task.WhenAll(tasks);
+        }
+        else
+        {
+            var configPath = WriteMetadataConfigForBatch(services, framework, tempOutput, intermediateFolder, null);
+            await RunDocfxMetadataAsync(configPath, framework);
+        }
+    }
+
+    private string WriteMetadataConfigForBatch(
+        List<ServiceInfo> services, string framework, string tempOutput, string intermediateFolder, int? batchIndex)
+    {
         var frameworkPath = Path.Combine(_options.AssembliesRoot, framework).Replace('\\', '/');
         var filterPath = Path.Combine(intermediateFolder, "filterConfig.yml").Replace('\\', '/');
-
         var baseReferences = _discovery.GetReferenceAssemblies(framework);
 
         var metadata = services.Select(service =>
@@ -81,12 +107,10 @@ public class MetadataMerger
             {
                 var dllPath = _discovery.FindExtensionDllPath(service.Name, framework);
                 srcPath = Path.GetDirectoryName(dllPath)!.Replace('\\', '/');
-                // Extension subfolder has co-located dependencies — add them as references
                 references = Directory.GetFiles(Path.GetDirectoryName(dllPath)!, "*.dll")
                     .Where(f => !Path.GetFileName(f).Equals($"AWSSDK.{service.Name}.dll", StringComparison.OrdinalIgnoreCase))
                     .Select(f => f.Replace('\\', '/'))
                     .ToList();
-                // Also add Core from the framework root
                 references.AddRange(baseReferences.Select(r => r.Replace('\\', '/')));
             }
             else
@@ -119,9 +143,14 @@ public class MetadataMerger
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase
         });
 
-        var configPath = Path.Combine(tempOutput, $"docfx-{framework}.json");
-        await File.WriteAllTextAsync(configPath, json);
+        var suffix = batchIndex.HasValue ? $"-batch{batchIndex}" : "";
+        var configPath = Path.Combine(tempOutput, $"docfx-{framework}{suffix}.json");
+        File.WriteAllText(configPath, json);
+        return configPath;
+    }
 
+    private async Task RunDocfxMetadataAsync(string configPath, string label)
+    {
         var docfxPath = FindDocfxPath();
         var psi = new ProcessStartInfo
         {
@@ -135,22 +164,32 @@ public class MetadataMerger
 
         using var process = Process.Start(psi);
         if (process == null)
-            throw new InvalidOperationException($"Failed to start docfx metadata for {framework}");
+            throw new InvalidOperationException($"Failed to start docfx metadata for {label}");
 
         var stdout = await process.StandardOutput.ReadToEndAsync();
         var stderr = await process.StandardError.ReadToEndAsync();
         await process.WaitForExitAsync();
 
         if (_options.Verbose && !string.IsNullOrEmpty(stdout))
-            Console.WriteLine($"    [{framework}] {stdout}");
+            Console.WriteLine($"    [{label}] {stdout}");
 
         if (process.ExitCode != 0)
         {
-            Console.Error.WriteLine($"    [{framework}] docfx metadata failed (exit code {process.ExitCode})");
+            Console.Error.WriteLine($"    [{label}] docfx metadata failed (exit code {process.ExitCode})");
             if (!string.IsNullOrEmpty(stderr))
                 Console.Error.WriteLine(stderr);
-            throw new InvalidOperationException($"DocFX metadata failed for {framework}");
+            throw new InvalidOperationException($"DocFX metadata failed for {label}");
         }
+    }
+
+    private static List<List<ServiceInfo>> Partition(List<ServiceInfo> services, int batchCount)
+    {
+        var batches = new List<List<ServiceInfo>>();
+        for (int i = 0; i < batchCount; i++)
+            batches.Add(new List<ServiceInfo>());
+        for (int i = 0; i < services.Count; i++)
+            batches[i % batchCount].Add(services[i]);
+        return batches;
     }
 
     private void MergeFrameworkOutput(
