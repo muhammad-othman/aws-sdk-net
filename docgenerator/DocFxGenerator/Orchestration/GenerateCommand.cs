@@ -207,9 +207,14 @@ public class GenerateCommand
         var apiFolder = Path.Combine(intermediateFolder, "api");
         Directory.CreateDirectory(apiFolder);
 
-        // Root toc.yml → top navbar with single "API Reference" entry
+        // Copy logo
+        var logoSource = Path.Combine(Path.GetDirectoryName(typeof(GenerateCommand).Assembly.Location)!, "logo.png");
+        if (File.Exists(logoSource))
+            File.Copy(logoSource, Path.Combine(intermediateFolder, "logo.png"), overwrite: true);
+
+        // Root toc.yml → empty (no top navbar dropdown items, just logo + search)
         var rootTocPath = Path.Combine(intermediateFolder, "toc.yml");
-        File.WriteAllText(rootTocPath, "- name: API Reference\n  href: api/\n");
+        File.WriteAllText(rootTocPath, "[]");
 
         // api/toc.yml → minimal placeholder so DocFX associates api/index.md with a sidebar TOC.
         // The real toc.json is generated post-build by MergeTocJson from per-service toc files.

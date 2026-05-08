@@ -104,10 +104,16 @@ public class DocFxConfigBuilder
                 {
                     new { files = overwriteFiles, src = "." }
                 },
+                resource = new[]
+                {
+                    new { files = new[] { "logo.png" }, src = "." }
+                },
                 globalMetadata = new Dictionary<string, object>
                 {
                     ["memberLayout"] = "SeparatePages",
                     ["_appTitle"] = "AWS SDK for .NET API Reference",
+                    ["_appName"] = "AWS SDK for .NET",
+                    ["_appLogoPath"] = "logo.png",
                     ["_enableSearch"] = true,
                     ["_disableContribution"] = true
                 },
