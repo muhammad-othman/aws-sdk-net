@@ -85,6 +85,7 @@ public class DocFxConfigBuilder
     {
         var contentFiles = batch
             .SelectMany(s => new[] { $"api/{s.Name}/**/*.yml", $"api/{s.Name}/toc.yml" })
+            .Concat(new[] { "toc.yml", "api/toc.yml", "api/index.md" })
             .ToArray();
 
         var overwriteFiles = batch
@@ -107,7 +108,7 @@ public class DocFxConfigBuilder
                 {
                     ["memberLayout"] = "SeparatePages",
                     ["_appTitle"] = "AWS SDK for .NET API Reference",
-                    ["_enableSearch"] = false,
+                    ["_enableSearch"] = true,
                     ["_disableContribution"] = true
                 },
                 xref = new[] { xrefmapPath.Replace('\\', '/') },
@@ -133,7 +134,7 @@ public class DocFxConfigBuilder
             {
                 content = new[]
                 {
-                    new { files = new[] { "toc.yml", "api/toc.yml", "api/index.md" }, src = "." }
+                    new { files = new[] { "toc.yml", "api/toc.yml", "api/index.md", "api/**/toc.yml" }, src = "." }
                 },
                 globalMetadata = new Dictionary<string, object>
                 {

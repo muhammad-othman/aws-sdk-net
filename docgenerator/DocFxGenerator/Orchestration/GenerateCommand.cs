@@ -211,16 +211,10 @@ public class GenerateCommand
         var rootTocPath = Path.Combine(intermediateFolder, "toc.yml");
         File.WriteAllText(rootTocPath, "- name: API Reference\n  href: api/\n");
 
-        // api/toc.yml → left sidebar listing all services
+        // api/toc.yml → minimal placeholder so DocFX associates api/index.md with a sidebar TOC.
+        // The real toc.json is generated post-build by MergeTocJson from per-service toc files.
         var apiTocPath = Path.Combine(apiFolder, "toc.yml");
-        using (var writer = new StreamWriter(apiTocPath))
-        {
-            foreach (var service in services.OrderBy(s => s.Name))
-            {
-                writer.WriteLine($"- name: {service.Name}");
-                writer.WriteLine($"  href: {service.Name}/toc.yml");
-            }
-        }
+        File.WriteAllText(apiTocPath, "- name: Loading...\n  href: index.md\n");
 
         // api/index.md → landing page (inside api/ so it gets the left sidebar)
         var indexPath = Path.Combine(apiFolder, "index.md");
@@ -266,6 +260,15 @@ public class GenerateCommand
 
         await Task.WhenAll(tasks);
 
+        // Collect search indexes from each batch before merging
+        var searchIndexParts = new List<string>();
+        foreach (var batchDir in batchOutputDirs)
+        {
+            var indexPath = Path.Combine(batchDir, "index.json");
+            if (File.Exists(indexPath))
+                searchIndexParts.Add(File.ReadAllText(indexPath));
+        }
+
         // Merge batch outputs into final _site/
         Console.WriteLine("  Merging batch outputs...");
         Directory.CreateDirectory(_options.OutputFolder);
@@ -275,11 +278,13 @@ public class GenerateCommand
             Directory.Delete(batchDir, recursive: true);
         }
 
-        // Build root content (toc, index page) separately
-        var rootConfigJson = configBuilder.BuildRootConfig(intermediateFolder, xrefmapPath);
-        var rootConfigPath = Path.Combine(intermediateFolder, "docfx-build-root.json");
-        await File.WriteAllTextAsync(rootConfigPath, rootConfigJson);
-        await RunDocfxCommandAsync("build", rootConfigPath);
+        // Write combined search index
+        MergeSearchIndexes(_options.OutputFolder, searchIndexParts);
+
+        // Generate combined api/toc.json and copy to each service folder
+        // (pages reference their local toc.json via docfx:tocrel)
+        MergeTocJson(_options.OutputFolder);
+        DistributeTocJson(_options.OutputFolder);
 
         WriteRootRedirect();
 
@@ -350,6 +355,162 @@ public class GenerateCommand
                 continue;
             var destFile = Path.Combine(destDir, Path.GetFileName(file));
             File.Move(file, destFile, overwrite: true);
+        }
+    }
+
+    private static void MergeSearchIndexes(string outputFolder, List<string> searchIndexParts)
+    {
+        if (searchIndexParts.Count == 0) return;
+
+        if (searchIndexParts.Count == 1)
+        {
+            File.WriteAllText(Path.Combine(outputFolder, "index.json"), searchIndexParts[0]);
+            return;
+        }
+
+        // DocFX index.json is a JSON object with keys as relative paths and values as search data.
+        // Merge by combining all objects.
+        using var combinedDoc = System.Text.Json.JsonDocument.Parse("{}");
+        var merged = new Dictionary<string, System.Text.Json.JsonElement>();
+
+        foreach (var part in searchIndexParts)
+        {
+            try
+            {
+                using var doc = System.Text.Json.JsonDocument.Parse(part);
+                foreach (var prop in doc.RootElement.EnumerateObject())
+                {
+                    merged[prop.Name] = prop.Value.Clone();
+                }
+            }
+            catch { }
+        }
+
+        var outputPath = Path.Combine(outputFolder, "index.json");
+        using var stream = File.Create(outputPath);
+        using var writer = new System.Text.Json.Utf8JsonWriter(stream);
+        writer.WriteStartObject();
+        foreach (var (key, value) in merged)
+        {
+            writer.WritePropertyName(key);
+            value.WriteTo(writer);
+        }
+        writer.WriteEndObject();
+    }
+
+    private static void MergeTocJson(string outputFolder)
+    {
+        // Build a flat api/toc.json that shows all services in the sidebar at all times.
+        // Prefix hrefs with service folder name since they're relative to api/{Service}/
+        // but we're writing them relative to api/.
+        var apiFolder = Path.Combine(outputFolder, "api");
+        var serviceDirs = Directory.GetDirectories(apiFolder)
+            .Where(d => File.Exists(Path.Combine(d, "toc.json")))
+            .OrderBy(d => Path.GetFileName(d))
+            .ToList();
+
+        using var stream = File.Create(Path.Combine(apiFolder, "toc.json"));
+        using var writer = new System.Text.Json.Utf8JsonWriter(stream);
+        writer.WriteStartObject();
+        writer.WriteStartArray("items");
+
+        foreach (var serviceDir in serviceDirs)
+        {
+            var serviceName = Path.GetFileName(serviceDir);
+            var serviceTocPath = Path.Combine(serviceDir, "toc.json");
+
+            try
+            {
+                var tocContent = File.ReadAllText(serviceTocPath);
+                using var doc = System.Text.Json.JsonDocument.Parse(tocContent);
+
+                writer.WriteStartObject();
+                writer.WriteString("name", serviceName);
+
+                if (doc.RootElement.TryGetProperty("items", out var items))
+                {
+                    writer.WritePropertyName("items");
+                    // Rewrite items with prefixed hrefs
+                    PrefixHrefs(writer, items, serviceName);
+                }
+
+                writer.WriteEndObject();
+            }
+            catch
+            {
+                writer.WriteStartObject();
+                writer.WriteString("name", serviceName);
+                writer.WriteEndObject();
+            }
+        }
+
+        writer.WriteEndArray();
+        writer.WriteEndObject();
+    }
+
+    private static void DistributeTocJson(string outputFolder)
+    {
+        // Service pages have <meta name="docfx:tocrel" content="toc.json"> pointing to
+        // their local service toc. Rewrite to point to parent api/toc.json instead.
+        var apiFolder = Path.Combine(outputFolder, "api");
+
+        Parallel.ForEach(Directory.GetDirectories(apiFolder), serviceDir =>
+        {
+            foreach (var htmlFile in Directory.GetFiles(serviceDir, "*.html"))
+            {
+                var content = File.ReadAllText(htmlFile);
+                if (content.Contains("\"docfx:tocrel\" content=\"toc.html\""))
+                {
+                    content = content.Replace(
+                        "\"docfx:tocrel\" content=\"toc.html\"",
+                        "\"docfx:tocrel\" content=\"../toc.html\"");
+                    File.WriteAllText(htmlFile, content);
+                }
+            }
+        });
+    }
+
+    private static void PrefixHrefs(System.Text.Json.Utf8JsonWriter writer, System.Text.Json.JsonElement element, string prefix)
+    {
+        if (element.ValueKind == System.Text.Json.JsonValueKind.Array)
+        {
+            writer.WriteStartArray();
+            foreach (var item in element.EnumerateArray())
+            {
+                PrefixHrefs(writer, item, prefix);
+            }
+            writer.WriteEndArray();
+        }
+        else if (element.ValueKind == System.Text.Json.JsonValueKind.Object)
+        {
+            writer.WriteStartObject();
+            foreach (var prop in element.EnumerateObject())
+            {
+                if ((prop.Name == "href" || prop.Name == "topicHref") &&
+                    prop.Value.ValueKind == System.Text.Json.JsonValueKind.String)
+                {
+                    var val = prop.Value.GetString();
+                    if (val != null && !val.StartsWith("http") && !val.StartsWith("/"))
+                        writer.WriteString(prop.Name, $"{prefix}/{val}");
+                    else
+                        prop.Value.WriteTo(writer);
+                }
+                else if (prop.Name == "items")
+                {
+                    writer.WritePropertyName("items");
+                    PrefixHrefs(writer, prop.Value, prefix);
+                }
+                else
+                {
+                    writer.WritePropertyName(prop.Name);
+                    prop.Value.WriteTo(writer);
+                }
+            }
+            writer.WriteEndObject();
+        }
+        else
+        {
+            element.WriteTo(writer);
         }
     }
 
