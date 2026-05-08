@@ -281,10 +281,8 @@ public class GenerateCommand
         // Write combined search index
         MergeSearchIndexes(_options.OutputFolder, searchIndexParts);
 
-        // Generate combined api/toc.json and copy to each service folder
-        // (pages reference their local toc.json via docfx:tocrel)
+        // Generate combined api/toc.json (flattened with all services for the homepage sidebar)
         MergeTocJson(_options.OutputFolder);
-        DistributeTocJson(_options.OutputFolder);
 
         WriteRootRedirect();
 
@@ -448,27 +446,6 @@ public class GenerateCommand
         writer.WriteEndObject();
     }
 
-    private static void DistributeTocJson(string outputFolder)
-    {
-        // Service pages have <meta name="docfx:tocrel" content="toc.json"> pointing to
-        // their local service toc. Rewrite to point to parent api/toc.json instead.
-        var apiFolder = Path.Combine(outputFolder, "api");
-
-        Parallel.ForEach(Directory.GetDirectories(apiFolder), serviceDir =>
-        {
-            foreach (var htmlFile in Directory.GetFiles(serviceDir, "*.html"))
-            {
-                var content = File.ReadAllText(htmlFile);
-                if (content.Contains("\"docfx:tocrel\" content=\"toc.html\""))
-                {
-                    content = content.Replace(
-                        "\"docfx:tocrel\" content=\"toc.html\"",
-                        "\"docfx:tocrel\" content=\"../toc.html\"");
-                    File.WriteAllText(htmlFile, content);
-                }
-            }
-        });
-    }
 
     private static void PrefixHrefs(System.Text.Json.Utf8JsonWriter writer, System.Text.Json.JsonElement element, string prefix)
     {
@@ -532,8 +509,8 @@ public class GenerateCommand
             File.WriteAllText(rootIndex, """
                 <!DOCTYPE html>
                 <html>
-                <head><meta http-equiv="refresh" content="0;url=api/"></head>
-                <body><a href="api/">Redirecting to API Reference...</a></body>
+                <head><meta http-equiv="refresh" content="0;url=api/index.html"></head>
+                <body><a href="api/index.html">Redirecting to API Reference...</a></body>
                 </html>
                 """.Replace("                ", ""));
         }
