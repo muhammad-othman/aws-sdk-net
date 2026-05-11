@@ -81,16 +81,10 @@ public class DocFxConfigBuilder
         File.WriteAllText(filterPath, filterContent);
     }
 
-    public string BuildBatchConfig(string intermediateFolder, List<ServiceInfo> batch, string xrefmapPath, int batchIndex, string outputDir)
+    public string BuildServiceConfig(string intermediateFolder, string serviceName, string outputDir)
     {
-        var contentFiles = batch
-            .SelectMany(s => new[] { $"api/{s.Name}/**/*.yml", $"api/{s.Name}/toc.yml" })
-            .Concat(new[] { "toc.yml", "api/toc.yml", "api/index.md" })
-            .ToArray();
-
-        var overwriteFiles = batch
-            .Select(s => $"overwrite/{s.Name}/**/*.md")
-            .ToArray();
+        var contentFiles = new[] { $"api/{serviceName}/**/*.yml", $"api/{serviceName}/toc.yml" };
+        var overwriteFiles = new[] { $"overwrite/{serviceName}/**/*.md" };
 
         var config = new
         {
@@ -111,13 +105,13 @@ public class DocFxConfigBuilder
                 globalMetadata = new Dictionary<string, object>
                 {
                     ["memberLayout"] = "SeparatePages",
-                    ["_appTitle"] = "AWS SDK for .NET API Reference",
+                    ["_appTitle"] = $"AWS SDK for .NET - {serviceName}",
                     ["_appName"] = "AWS SDK for .NET",
                     ["_appLogoPath"] = "logo.png",
+                    ["_appLogoUrl"] = "/index.html",
                     ["_enableSearch"] = true,
                     ["_disableContribution"] = true
                 },
-                xref = new[] { xrefmapPath.Replace('\\', '/') },
                 template = new[] { "default", "modern", GetTemplatePath() },
                 dest = outputDir,
                 disableGitFeatures = true

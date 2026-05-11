@@ -238,63 +238,141 @@ public class GenerateCommand
         DocFxConfigBuilder configBuilder, string intermediateFolder, List<ServiceInfo> servicesToBuild)
     {
         Console.WriteLine("Building documentation (YAML → HTML)...");
+        Directory.CreateDirectory(_options.OutputFolder);
 
-        // Generate Core-only xrefmap (small — just the types all services inherit from)
-        var xrefmapPath = Path.Combine(intermediateFolder, "xrefmap-core.yml");
-        GenerateCoreXrefmap(intermediateFolder, xrefmapPath);
+        var servicesFolder = Path.Combine(_options.OutputFolder, "services");
+        Directory.CreateDirectory(servicesFolder);
 
-        // Partition services into N batches and build in parallel
-        // Each batch writes to its own temp output dir to avoid file lock conflicts (xrefmap.yml)
-        var batchCount = Math.Min(_options.MaxParallelism, Math.Max(1, servicesToBuild.Count));
-        var batches = Partition(servicesToBuild, batchCount);
-        var batchOutputDirs = new List<string>();
+        // Build each service independently with throttled concurrency
+        Console.WriteLine($"  Building {servicesToBuild.Count} services ({_options.MaxParallelism} concurrent)...");
 
-        Console.WriteLine($"  Building {servicesToBuild.Count} services in {batches.Count} parallel batch processes...");
-
-        var tasks = batches.Select((batch, i) =>
+        using var semaphore = new SemaphoreSlim(_options.MaxParallelism);
+        var buildTasks = servicesToBuild.Select(async service =>
         {
-            var batchOutputDir = Path.Combine(intermediateFolder, $"_build_output_{i}");
-            Directory.CreateDirectory(batchOutputDir);
-            lock (batchOutputDirs) batchOutputDirs.Add(batchOutputDir);
-
-            var configJson = configBuilder.BuildBatchConfig(intermediateFolder, batch, xrefmapPath, i, batchOutputDir);
-            var configPath = Path.Combine(intermediateFolder, $"docfx-build-batch-{i}.json");
-            File.WriteAllText(configPath, configJson);
-            return RunDocfxCommandAsync("build", configPath);
+            await semaphore.WaitAsync();
+            try
+            {
+                var serviceOutputDir = Path.Combine(servicesFolder, service.Name);
+                var configJson = configBuilder.BuildServiceConfig(intermediateFolder, service.Name, serviceOutputDir);
+                var configPath = Path.Combine(intermediateFolder, $"docfx-build-{service.Name}.json");
+                File.WriteAllText(configPath, configJson);
+                await RunDocfxCommandAsync("build", configPath);
+            }
+            finally
+            {
+                semaphore.Release();
+            }
         }).ToList();
 
-        await Task.WhenAll(tasks);
+        await Task.WhenAll(buildTasks);
 
-        // Collect search indexes from each batch before merging
-        var searchIndexParts = new List<string>();
-        foreach (var batchDir in batchOutputDirs)
+        // Generate per-service index.html redirects
+        foreach (var service in servicesToBuild)
         {
-            var indexPath = Path.Combine(batchDir, "index.json");
-            if (File.Exists(indexPath))
-                searchIndexParts.Add(File.ReadAllText(indexPath));
+            var serviceDir = Path.Combine(servicesFolder, service.Name);
+
+            // Root service redirect → api/{Service}/namespace page
+            var serviceIndex = Path.Combine(serviceDir, "index.html");
+            if (!File.Exists(serviceIndex))
+            {
+                var namespacePage = $"api/{service.Name}/Amazon.{service.Name}.html";
+                File.WriteAllText(serviceIndex, $"<!DOCTYPE html><html><head><meta http-equiv=\"refresh\" content=\"0;url={namespacePage}\"></head><body></body></html>");
+            }
+
+            // api/{Service}/index.html → first namespace page
+            var apiServiceDir = Path.Combine(serviceDir, "api", service.Name);
+            if (Directory.Exists(apiServiceDir))
+            {
+                var apiIndex = Path.Combine(apiServiceDir, "index.html");
+                if (!File.Exists(apiIndex))
+                {
+                    var firstPage = Directory.GetFiles(apiServiceDir, $"Amazon.{service.Name}.html").FirstOrDefault()
+                        ?? Directory.GetFiles(apiServiceDir, "Amazon.*.html").FirstOrDefault();
+                    var target = firstPage != null ? Path.GetFileName(firstPage) : "toc.html";
+                    File.WriteAllText(apiIndex, $"<!DOCTYPE html><html><head><meta http-equiv=\"refresh\" content=\"0;url={target}\"></head><body></body></html>");
+                }
+            }
         }
 
-        // Merge batch outputs into final _site/
-        Console.WriteLine("  Merging batch outputs...");
-        Directory.CreateDirectory(_options.OutputFolder);
-        foreach (var batchDir in batchOutputDirs)
-        {
-            MergeDirectory(batchDir, _options.OutputFolder);
-            Directory.Delete(batchDir, recursive: true);
-        }
+        // Generate homepage
+        GenerateHomepage(servicesToBuild);
 
-        // Write combined search index
-        MergeSearchIndexes(_options.OutputFolder, searchIndexParts);
-
-        // Generate combined api/toc.json (flattened with all services for the homepage sidebar)
-        MergeTocJson(_options.OutputFolder);
-
-        WriteRootRedirect();
+        // Copy logo to output root
+        var logoSource = Path.Combine(Path.GetDirectoryName(typeof(GenerateCommand).Assembly.Location)!, "logo.png");
+        if (File.Exists(logoSource))
+            File.Copy(logoSource, Path.Combine(_options.OutputFolder, "logo.png"), overwrite: true);
 
         Console.WriteLine($"Documentation built successfully to: {_options.OutputFolder}");
     }
 
-    private void GenerateCoreXrefmap(string intermediateFolder, string xrefmapPath)
+    private void GenerateHomepage(List<ServiceInfo> services)
+    {
+        var firstService = services.First().Name;
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine("<!DOCTYPE html>");
+        sb.AppendLine("<html lang=\"en\">");
+        sb.AppendLine("<head>");
+        sb.AppendLine("  <meta charset=\"utf-8\">");
+        sb.AppendLine("  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">");
+        sb.AppendLine("  <title>AWS SDK for .NET API Reference</title>");
+        sb.AppendLine($"  <link rel=\"stylesheet\" href=\"services/{firstService}/public/docfx.min.css\">");
+        sb.AppendLine($"  <link rel=\"stylesheet\" href=\"services/{firstService}/public/main.css\">");
+        sb.AppendLine("  <style>");
+        sb.AppendLine("    .service-list { column-count: 4; column-gap: 2rem; list-style: none; padding: 0; margin: 0; }");
+        sb.AppendLine("    .service-list li { padding: 4px 0; }");
+        sb.AppendLine("    .service-list a { text-decoration: none; color: var(--bs-link-color); }");
+        sb.AppendLine("    .service-list a:hover { text-decoration: underline; }");
+        sb.AppendLine("    .content { display: flex; }");
+        sb.AppendLine("    .sidebar { width: 300px; padding: 1rem; border-right: 1px solid var(--bs-border-color); height: calc(100vh - 70px); overflow-y: auto; }");
+        sb.AppendLine("    .main-content { flex: 1; padding: 2rem; overflow-y: auto; height: calc(100vh - 70px); }");
+        sb.AppendLine("    .sidebar-filter { width: 100%; padding: 6px 10px; margin-bottom: 1rem; border: 1px solid var(--bs-border-color); border-radius: 4px; background: var(--bs-body-bg); color: var(--bs-body-color); }");
+        sb.AppendLine("    @media (max-width: 768px) { .service-list { column-count: 2; } .sidebar { display: none; } }");
+        sb.AppendLine("  </style>");
+        sb.AppendLine("</head>");
+        sb.AppendLine($"<body data-bs-theme=\"dark\">");
+        sb.AppendLine("  <header class=\"bg-body border-bottom\">");
+        sb.AppendLine("  <nav id=\"autocollapse\" class=\"navbar navbar-expand-md\" role=\"navigation\">");
+        sb.AppendLine("    <div class=\"container-xxl flex-nowrap\">");
+        sb.AppendLine("      <a class=\"navbar-brand\" href=\"/index.html\">");
+        sb.AppendLine("        <img id=\"logo\" class=\"svg\" src=\"logo.png\" alt=\"AWS SDK for .NET\">");
+        sb.AppendLine("        AWS SDK for .NET");
+        sb.AppendLine("      </a>");
+        sb.AppendLine("     <div id=\"collapse navbar-collapse\">");
+        sb.AppendLine("       <span style=\"font-size:1.1rem;font-weight:500\">AWS SDK for .NET API Reference</span>");
+        sb.AppendLine("     </div>");
+        sb.AppendLine("    </div>");
+        sb.AppendLine("  </nav>");
+        sb.AppendLine("  </header>");
+        sb.AppendLine("  <div class=\"content  container-xxl\">");
+        sb.AppendLine("    <aside class=\"sidebar\">");
+        sb.AppendLine("      <input type=\"text\" class=\"sidebar-filter\" id=\"filter\" placeholder=\"Filter services...\" oninput=\"filterServices()\">");
+        sb.AppendLine("      <ul class=\"service-list\" id=\"service-list\" style=\"column-count:1\">");
+        foreach (var service in services.OrderBy(s => s.Name))
+        {
+            sb.AppendLine($"        <li><a href=\"/services/{service.Name}/api/{service.Name}/Amazon.{service.Name}.html\">{service.Name}</a></li>");
+        }
+        sb.AppendLine("      </ul>");
+        sb.AppendLine("    </aside>");
+        sb.AppendLine("    <main class=\"main-content\">");
+        sb.AppendLine("      <h1>AWS SDK for .NET API Reference</h1>");
+        sb.AppendLine("      <p>Welcome to the AWS SDK for .NET API Reference. Select a service from the navigation to browse its API documentation.</p>");
+        sb.AppendLine("    </main>");
+        sb.AppendLine("  </div>");
+        sb.AppendLine("  <script>");
+        sb.AppendLine("    function filterServices() {");
+        sb.AppendLine("      const q = document.getElementById('filter').value.toLowerCase();");
+        sb.AppendLine("      document.querySelectorAll('#service-list li').forEach(li => {");
+        sb.AppendLine("        li.style.display = li.textContent.toLowerCase().includes(q) ? '' : 'none';");
+        sb.AppendLine("      });");
+        sb.AppendLine("    }");
+        sb.AppendLine("  </script>");
+        sb.AppendLine("</body>");
+        sb.AppendLine("</html>");
+
+        File.WriteAllText(Path.Combine(_options.OutputFolder, "index.html"), sb.ToString());
+    }
+
+    private void _Unused_GenerateCoreXrefmap(string intermediateFolder, string xrefmapPath)
     {
         var sb = new System.Text.StringBuilder();
         sb.AppendLine("### YamlMime:XRefMap");
@@ -361,7 +439,59 @@ public class GenerateCommand
         }
     }
 
-    private static void MergeSearchIndexes(string outputFolder, List<string> searchIndexParts)
+    private static void GenerateServiceIndexPages(string outputFolder)
+    {
+        var apiFolder = Path.Combine(outputFolder, "api");
+        foreach (var serviceDir in Directory.GetDirectories(apiFolder))
+        {
+            var indexPath = Path.Combine(serviceDir, "index.html");
+            if (File.Exists(indexPath)) continue;
+
+            // Find the first namespace page (e.g. Amazon.S3.html) to redirect to
+            var serviceName = Path.GetFileName(serviceDir);
+            var namespacePage = Directory.GetFiles(serviceDir, $"Amazon.{serviceName}.html").FirstOrDefault()
+                ?? Directory.GetFiles(serviceDir, "Amazon.*.html").FirstOrDefault();
+
+            var target = namespacePage != null ? Path.GetFileName(namespacePage) : "toc.html";
+
+            File.WriteAllText(indexPath, $"""
+                <!DOCTYPE html>
+                <html>
+                <head><meta http-equiv="refresh" content="0;url={target}"></head>
+                <body><a href="{target}">Redirecting...</a></body>
+                </html>
+                """);
+        }
+    }
+
+    private static void GenerateServiceListToc(string outputFolder)
+    {
+        var apiFolder = Path.Combine(outputFolder, "api");
+        var serviceDirs = Directory.GetDirectories(apiFolder)
+            .Where(d => File.Exists(Path.Combine(d, "toc.json")))
+            .OrderBy(d => Path.GetFileName(d))
+            .ToList();
+
+        using var stream = File.Create(Path.Combine(apiFolder, "toc.json"));
+        using var writer = new System.Text.Json.Utf8JsonWriter(stream);
+        writer.WriteStartObject();
+        writer.WriteStartArray("items");
+
+        foreach (var serviceDir in serviceDirs)
+        {
+            var serviceName = Path.GetFileName(serviceDir);
+            writer.WriteStartObject();
+            writer.WriteString("name", serviceName);
+            writer.WriteString("href", $"{serviceName}/");
+            writer.WriteString("topicHref", $"{serviceName}/");
+            writer.WriteEndObject();
+        }
+
+        writer.WriteEndArray();
+        writer.WriteEndObject();
+    }
+
+    private static void _Unused_MergeSearchIndexes(string outputFolder, List<string> searchIndexParts)
     {
         if (searchIndexParts.Count == 0) return;
 
