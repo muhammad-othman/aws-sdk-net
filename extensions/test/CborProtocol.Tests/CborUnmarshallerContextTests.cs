@@ -1,5 +1,5 @@
 ﻿using Amazon.Extensions.CborProtocol;
-using Amazon.Extensions.CborProtocol.Internal;
+using Amazon.Extensions.CborProtocol.Internal.Transform;
 using System;
 using System.Formats.Cbor;
 using System.IO;
@@ -29,8 +29,56 @@ public class BufferSizeConfigFixture : IDisposable
     }
 }
 
-public class CborStreamReaderTests : IClassFixture<BufferSizeConfigFixture>
+public class CborUnmarshallerContextTests : IClassFixture<BufferSizeConfigFixture>
 {
+    private static CborUnmarshallerContext CreateContext(Stream stream)
+        => new CborUnmarshallerContext(stream, maintainResponseBody: false, responseData: null);
+
+    // Helpers mirroring how the SDK's unmarshallers drive the reader: a refilling
+    // context.PeekState() before each single-token read (which guarantees that read
+    // cannot run past the end of the buffer), and the context's chunk-aware methods
+    // for values that may consume multiple tokens (text and byte strings, decimals).
+    private static string ReadTextString(CborUnmarshallerContext context)
+        => context.ReadTextString();
+
+    private static byte[] ReadByteString(CborUnmarshallerContext context)
+        => context.ReadByteString();
+
+    private static int ReadInt32(CborUnmarshallerContext context)
+    {
+        context.PeekState();
+        return context.Reader.ReadInt32();
+    }
+
+    private static int? ReadStartMap(CborUnmarshallerContext context)
+    {
+        context.PeekState();
+        return context.Reader.ReadStartMap();
+    }
+
+    private static int? ReadStartArray(CborUnmarshallerContext context)
+    {
+        context.PeekState();
+        return context.Reader.ReadStartArray();
+    }
+
+    private static void ReadEndMap(CborUnmarshallerContext context)
+    {
+        context.PeekState();
+        context.Reader.ReadEndMap();
+    }
+
+    private static void ReadEndArray(CborUnmarshallerContext context)
+    {
+        context.PeekState();
+        context.Reader.ReadEndArray();
+    }
+
+    private static CborTag ReadTag(CborUnmarshallerContext context)
+    {
+        context.PeekState();
+        return context.Reader.ReadTag();
+    }
 
     [Fact]
     public void Unmarshall_SimpleObject_FitsInInitialBuffer()
@@ -46,15 +94,15 @@ public class CborStreamReaderTests : IClassFixture<BufferSizeConfigFixture>
         byte[] bytes = writer.Encode();
         var stream = new MemoryStream(bytes);
 
-        using var reader = new CborStreamReader(stream);
+        using var context = CreateContext(stream);
 
-        reader.ReadStartMap();
-        Assert.Equal("Key1", reader.ReadTextString());
-        Assert.Equal("Value1", reader.ReadTextString());
-        Assert.Equal("Key2", reader.ReadTextString());
-        reader.SkipValue(); // Skip integer
-        reader.ReadEndMap();
-        Assert.Equal(CborReaderState.Finished, reader.PeekState());
+        ReadStartMap(context);
+        Assert.Equal("Key1", ReadTextString(context));
+        Assert.Equal("Value1", ReadTextString(context));
+        Assert.Equal("Key2", ReadTextString(context));
+        context.SkipValue(); // Skip integer
+        ReadEndMap(context);
+        Assert.Equal(CborReaderState.Finished, context.PeekState());
 
     }
 
@@ -73,9 +121,9 @@ public class CborStreamReaderTests : IClassFixture<BufferSizeConfigFixture>
         byte[] bytes = writer.Encode();
         var stream = new MemoryStream(bytes);
 
-        using var reader = new CborStreamReader(stream);
+        using var context = CreateContext(stream);
 
-        string result = reader.ReadTextString();
+        string result = ReadTextString(context);
         Assert.Equal(veryLargeString, result);
 
     }
@@ -97,19 +145,19 @@ public class CborStreamReaderTests : IClassFixture<BufferSizeConfigFixture>
         byte[] bytes = writer.Encode();
         var stream = new MemoryStream(bytes);
 
-        using var reader = new CborStreamReader(stream);
+        using var context = CreateContext(stream);
 
-        reader.ReadStartMap();
-        Assert.Equal("key1", reader.ReadTextString());
-        string value1 = reader.ReadTextString(); // This read will consume most of the first chunk.
+        ReadStartMap(context);
+        Assert.Equal("key1", ReadTextString(context));
+        string value1 = ReadTextString(context); // This read will consume most of the first chunk.
         Assert.Equal(90, value1.Length);
-        Assert.Equal("key2", reader.ReadTextString());
-        reader.ReadStartMap();
+        Assert.Equal("key2", ReadTextString(context));
+        ReadStartMap(context);
 
-        Assert.Equal("key3", reader.ReadTextString());
-        Assert.Equal("value2", reader.ReadTextString());
-        reader.ReadEndMap();
-        reader.ReadEndMap();
+        Assert.Equal("key3", ReadTextString(context));
+        Assert.Equal("value2", ReadTextString(context));
+        ReadEndMap(context);
+        ReadEndMap(context);
 
     }
 
@@ -131,23 +179,23 @@ public class CborStreamReaderTests : IClassFixture<BufferSizeConfigFixture>
 
         var stream = new MemoryStream(writer.Encode());
 
-        using var reader = new CborStreamReader(stream);
+        using var context = CreateContext(stream);
 
-        reader.ReadStartArray();
+        ReadStartArray(context);
 
         // Skip the entire large map object
-        reader.SkipValue();
+        context.SkipValue();
 
         // Assert that we can correctly read the next item
-        Assert.Equal(99, reader.ReadInt32());
+        Assert.Equal(99, ReadInt32(context));
 
-        reader.ReadEndArray();
-        Assert.Equal(CborReaderState.Finished, reader.PeekState());
+        ReadEndArray(context);
+        Assert.Equal(CborReaderState.Finished, context.PeekState());
 
     }
 
     [Fact]
-    public void ReadEndArray_WhenInMap_ThrowsCborContentException()
+    public void ReadEndArray_WhenInMap_ThrowsInvalidOperationException()
     {
         // Arrange: A simple map
         var writer = new CborWriter();
@@ -156,10 +204,11 @@ public class CborStreamReaderTests : IClassFixture<BufferSizeConfigFixture>
         var stream = new MemoryStream(writer.Encode());
 
         // Act & Assert
-        using var reader = new CborStreamReader(stream);
+        using var context = CreateContext(stream);
 
-        reader.ReadStartMap();
-        Assert.Throws<CborContentException>(() => reader.ReadEndArray());
+        ReadStartMap(context);
+        // CborReader reports a container type mismatch as InvalidOperationException.
+        Assert.Throws<InvalidOperationException>(() => ReadEndArray(context));
 
     }
 
@@ -170,11 +219,11 @@ public class CborStreamReaderTests : IClassFixture<BufferSizeConfigFixture>
         byte[] bytes = Convert.FromBase64String("eBQKCgoKCgoKCg==");
         var stream = new MemoryStream(bytes);
 
-        using var reader = new CborStreamReader(stream);
+        using var context = CreateContext(stream);
 
         // The reader will attempt to read the string, realize it's incomplete,
         // try to refill, find no more data, and then throw an exception.
-        Assert.Throws<CborContentException>(() => reader.ReadTextString());
+        Assert.Throws<CborContentException>(() => ReadTextString(context));
 
     }
 
@@ -185,10 +234,10 @@ public class CborStreamReaderTests : IClassFixture<BufferSizeConfigFixture>
         byte[] bytes = new byte[0];
         var stream = new MemoryStream(bytes);
 
-        using var reader = new CborStreamReader(stream);
+        using var context = CreateContext(stream);
 
         // Attempting to read from a finished reader should throw.
-        Assert.Throws<CborContentException>(() => reader.ReadStartMap());
+        Assert.Throws<CborContentException>(() => ReadStartMap(context));
 
     }
 
@@ -212,21 +261,21 @@ public class CborStreamReaderTests : IClassFixture<BufferSizeConfigFixture>
         byte[] bytes = writer.Encode();
         var stream = new MemoryStream(bytes);
 
-        using var reader = new CborStreamReader(stream);
+        using var context = CreateContext(stream);
 
-        reader.ReadStartMap();
+        ReadStartMap(context);
 
-        Assert.Equal("item1", reader.ReadTextString());
-        Assert.Equal(80, reader.ReadTextString().Length);
+        Assert.Equal("item1", ReadTextString(context));
+        Assert.Equal(80, ReadTextString(context).Length);
 
-        Assert.Equal("item2", reader.ReadTextString());
-        Assert.Equal(80, reader.ReadTextString().Length);
+        Assert.Equal("item2", ReadTextString(context));
+        Assert.Equal(80, ReadTextString(context).Length);
 
-        Assert.Equal("item3", reader.ReadTextString());
-        Assert.Equal(80, reader.ReadTextString().Length);
+        Assert.Equal("item3", ReadTextString(context));
+        Assert.Equal(80, ReadTextString(context).Length);
 
-        reader.ReadEndMap();
-        Assert.Equal(CborReaderState.Finished, reader.PeekState());
+        ReadEndMap(context);
+        Assert.Equal(CborReaderState.Finished, context.PeekState());
 
     }
 
@@ -244,14 +293,14 @@ public class CborStreamReaderTests : IClassFixture<BufferSizeConfigFixture>
 
         var stream = new MemoryStream(writer.Encode());
 
-        using var reader = new CborStreamReader(stream);
-        reader.ReadStartMap();
-        Assert.Equal("nestedArray", reader.ReadTextString());
-        reader.ReadStartArray();
-        Assert.Equal(1, reader.ReadInt32());
-        Assert.Equal(2, reader.ReadInt32());
-        reader.ReadEndArray();
-        reader.ReadEndMap();
+        using var context = CreateContext(stream);
+        ReadStartMap(context);
+        Assert.Equal("nestedArray", ReadTextString(context));
+        ReadStartArray(context);
+        Assert.Equal(1, ReadInt32(context));
+        Assert.Equal(2, ReadInt32(context));
+        ReadEndArray(context);
+        ReadEndMap(context);
     }
 
     [Fact]
@@ -265,11 +314,11 @@ public class CborStreamReaderTests : IClassFixture<BufferSizeConfigFixture>
 
         var stream = new MemoryStream(writer.Encode());
 
-        using var reader = new CborStreamReader(stream);
-        reader.ReadStartArray();
-        Assert.Equal(90, reader.ReadTextString().Length);
-        Assert.Equal("done", reader.ReadTextString());
-        reader.ReadEndArray();
+        using var context = CreateContext(stream);
+        ReadStartArray(context);
+        Assert.Equal(90, ReadTextString(context).Length);
+        Assert.Equal("done", ReadTextString(context));
+        ReadEndArray(context);
     }
 
     [Fact]
@@ -286,14 +335,14 @@ public class CborStreamReaderTests : IClassFixture<BufferSizeConfigFixture>
 
         var stream = new MemoryStream(writer.Encode());
 
-        using var reader = new CborStreamReader(stream);
-        reader.ReadStartMap();
-        Assert.Equal("array", reader.ReadTextString());
-        reader.ReadStartArray();
-        Assert.Equal("one", reader.ReadTextString());
-        Assert.Equal("two", reader.ReadTextString());
-        reader.ReadEndArray();
-        reader.ReadEndMap();
+        using var context = CreateContext(stream);
+        ReadStartMap(context);
+        Assert.Equal("array", ReadTextString(context));
+        ReadStartArray(context);
+        Assert.Equal("one", ReadTextString(context));
+        Assert.Equal("two", ReadTextString(context));
+        ReadEndArray(context);
+        ReadEndMap(context);
     }
 
     [Fact]
@@ -305,9 +354,9 @@ public class CborStreamReaderTests : IClassFixture<BufferSizeConfigFixture>
 
         var stream = new MemoryStream(writer.Encode());
 
-        using var reader = new CborStreamReader(stream);
-        reader.ReadStartArray();
-        reader.ReadEndArray();
+        using var context = CreateContext(stream);
+        ReadStartArray(context);
+        ReadEndArray(context);
     }
 
     [Fact]
@@ -322,10 +371,10 @@ public class CborStreamReaderTests : IClassFixture<BufferSizeConfigFixture>
         var bytes = writer.Encode().Take(5).ToArray(); // Truncate it
         var stream = new MemoryStream(bytes);
 
-        using var reader = new CborStreamReader(stream);
-        reader.ReadStartMap();
-        Assert.Equal("key", reader.ReadTextString());
-        Assert.Throws<CborContentException>(() => reader.ReadTextString());
+        using var context = CreateContext(stream);
+        ReadStartMap(context);
+        Assert.Equal("key", ReadTextString(context));
+        Assert.Throws<CborContentException>(() => ReadTextString(context));
     }
 
     [Fact]
@@ -339,11 +388,11 @@ public class CborStreamReaderTests : IClassFixture<BufferSizeConfigFixture>
 
         var stream = new MemoryStream(writer.Encode());
 
-        using var reader = new CborStreamReader(stream);
-        reader.ReadStartArray();
-        reader.SkipValue(); // This string skip will require buffer refill
-        Assert.Equal(42, reader.ReadInt32());
-        reader.ReadEndArray();
+        using var context = CreateContext(stream);
+        ReadStartArray(context);
+        context.SkipValue(); // This string skip will require buffer refill
+        Assert.Equal(42, ReadInt32(context));
+        ReadEndArray(context);
     }
 
     [Theory]
@@ -361,11 +410,11 @@ public class CborStreamReaderTests : IClassFixture<BufferSizeConfigFixture>
         writer.WriteByteString(largeByteArray);
         writer.WriteEndArray();
 
-        using var reader = new CborStreamReader(new MemoryStream(writer.Encode()));
+        using var context = CreateContext(new MemoryStream(writer.Encode()));
 
-        reader.ReadStartArray();
-        byte[] result = reader.ReadByteString();
-        reader.ReadEndArray();
+        ReadStartArray(context);
+        byte[] result = ReadByteString(context);
+        ReadEndArray(context);
 
         Assert.Equal(largeByteArray, result);
     }
@@ -384,12 +433,89 @@ public class CborStreamReaderTests : IClassFixture<BufferSizeConfigFixture>
         writer.WriteTextString(textString);
         writer.WriteEndArray();
 
-        using var reader = new CborStreamReader(new MemoryStream(writer.Encode()));
-        reader.ReadStartArray();
-        var result = reader.ReadTextString();
-        reader.ReadEndArray();
+        using var context = CreateContext(new MemoryStream(writer.Encode()));
+        ReadStartArray(context);
+        var result = ReadTextString(context);
+        ReadEndArray(context);
 
         Assert.Equal(textString, result);
+    }
+
+    [Theory]
+    [InlineData(30)]   // chunks fit in the initial buffer
+    [InlineData(80)]   // chunk boundaries interleave with buffer boundaries
+    [InlineData(250)]  // single chunk larger than the initial buffer
+    public void Unmarshall_IndefiniteLengthTextString_ReadChunkByChunk(int chunkSize)
+    {
+        var writer = new CborWriter(convertIndefiniteLengthEncodings: false);
+        writer.WriteStartArray(2);
+        writer.WriteStartIndefiniteLengthTextString();
+        writer.WriteTextString(new string('A', chunkSize));
+        writer.WriteTextString(new string('B', chunkSize));
+        writer.WriteTextString(new string('C', chunkSize));
+        writer.WriteEndIndefiniteLengthTextString();
+        writer.WriteInt32(7);
+        writer.WriteEndArray();
+
+        var stream = new MemoryStream(writer.Encode());
+        using var context = CreateContext(stream);
+
+        ReadStartArray(context);
+        string result = ReadTextString(context);
+        Assert.Equal(new string('A', chunkSize) + new string('B', chunkSize) + new string('C', chunkSize), result);
+        Assert.Equal(7, ReadInt32(context));
+        ReadEndArray(context);
+        Assert.Equal(CborReaderState.Finished, context.PeekState());
+    }
+
+    [Theory]
+    [InlineData(30)]
+    [InlineData(80)]
+    [InlineData(250)]
+    public void Unmarshall_IndefiniteLengthByteString_ReadChunkByChunk(int chunkSize)
+    {
+        var chunk1 = new byte[chunkSize];
+        var chunk2 = new byte[chunkSize];
+        new Random(42).NextBytes(chunk1);
+        new Random(43).NextBytes(chunk2);
+
+        var writer = new CborWriter(convertIndefiniteLengthEncodings: false);
+        writer.WriteStartIndefiniteLengthByteString();
+        writer.WriteByteString(chunk1);
+        writer.WriteByteString(chunk2);
+        writer.WriteEndIndefiniteLengthByteString();
+
+        var stream = new MemoryStream(writer.Encode());
+        using var context = CreateContext(stream);
+
+        byte[] result = ReadByteString(context);
+        Assert.Equal(chunk1.Concat(chunk2).ToArray(), result);
+        Assert.Equal(CborReaderState.Finished, context.PeekState());
+    }
+
+    [Theory]
+    [InlineData("3.14159")]
+    [InlineData("-0.000001")]
+    [InlineData("79228162514264337593543950335")] // decimal.MaxValue, forces a bignum mantissa
+    public void Unmarshall_Decimal_CrossingBufferBoundary(string decimalText)
+    {
+        var expected = decimal.Parse(decimalText, System.Globalization.CultureInfo.InvariantCulture);
+
+        // Pad with a large string so the decimal lands near a buffer boundary.
+        var writer = new CborWriter();
+        writer.WriteStartArray(2);
+        writer.WriteTextString(new string('X', 95));
+        writer.WriteDecimal(expected);
+        writer.WriteEndArray();
+
+        var stream = new MemoryStream(writer.Encode());
+        using var context = CreateContext(stream);
+
+        ReadStartArray(context);
+        Assert.Equal(95, ReadTextString(context).Length);
+        Assert.Equal(expected, context.ReadDecimal());
+        ReadEndArray(context);
+        Assert.Equal(CborReaderState.Finished, context.PeekState());
     }
 
     [Fact]
@@ -399,9 +525,9 @@ public class CborStreamReaderTests : IClassFixture<BufferSizeConfigFixture>
         writer.WriteTag(CborTag.DateTimeString);
         writer.WriteTextString("2025-07-29T00:00:00Z");
 
-        using var reader = new CborStreamReader(new MemoryStream(writer.Encode()));
-        CborTag tag = reader.ReadTag();
-        string dateStr = reader.ReadTextString();
+        using var context = CreateContext(new MemoryStream(writer.Encode()));
+        CborTag tag = ReadTag(context);
+        string dateStr = ReadTextString(context);
 
         Assert.Equal(CborTag.DateTimeString, tag);
         Assert.Equal("2025-07-29T00:00:00Z", dateStr);
@@ -423,16 +549,16 @@ public class CborStreamReaderTests : IClassFixture<BufferSizeConfigFixture>
             writer.WriteEndMap();
         }
 
-        using var reader = new CborStreamReader(new MemoryStream(writer.Encode()));
+        using var context = CreateContext(new MemoryStream(writer.Encode()));
         for (int i = 0; i < 10; i++)
         {
-            reader.ReadStartMap();
-            Assert.Equal($"level{i}", reader.ReadTextString());
+            ReadStartMap(context);
+            Assert.Equal($"level{i}", ReadTextString(context));
         }
-        Assert.Equal("value", reader.ReadTextString());
+        Assert.Equal("value", ReadTextString(context));
         for (int i = 0; i < 10; i++)
         {
-            reader.ReadEndMap();
+            ReadEndMap(context);
         }
     }
 
@@ -447,16 +573,16 @@ public class CborStreamReaderTests : IClassFixture<BufferSizeConfigFixture>
 
         byte[] bytes = writer.Encode();
         using var stream = new MemoryStream(bytes);
-        using var reader = new CborStreamReader(stream);
+        using var context = CreateContext(stream);
 
-        reader.ReadStartMap();
-        Assert.Equal("key", reader.ReadTextString());
+        ReadStartMap(context);
+        Assert.Equal("key", ReadTextString(context));
 
         // This should trigger a refill, not treat it as EndMap
-        var value = reader.ReadTextString();
+        var value = ReadTextString(context);
         Assert.Equal(95, value.Length);
 
-        reader.ReadEndMap();
+        ReadEndMap(context);
     }
 
     [Fact]
@@ -469,15 +595,15 @@ public class CborStreamReaderTests : IClassFixture<BufferSizeConfigFixture>
 
         var bytes = writer.Encode();
         using var stream = new MemoryStream(bytes);
-        using var reader = new CborStreamReader(stream);
+        using var context = CreateContext(stream);
 
-        reader.ReadStartArray();
-        string value = reader.ReadTextString();
+        ReadStartArray(context);
+        string value = ReadTextString(context);
 
         // This will cause a refill where the 0xFF is the first byte of the new chunk
-        reader.ReadEndArray();
+        ReadEndArray(context);
 
-        Assert.Equal(CborReaderState.Finished, reader.PeekState());
+        Assert.Equal(CborReaderState.Finished, context.PeekState());
     }
 
     [Fact]
@@ -492,17 +618,17 @@ public class CborStreamReaderTests : IClassFixture<BufferSizeConfigFixture>
 
         byte[] bytes = writer.Encode();
         using var stream = new MemoryStream(bytes);
-        using var reader = new CborStreamReader(stream);
+        using var context = CreateContext(stream);
 
-        reader.ReadStartArray(); // outer
-        reader.ReadStartArray(); // inner
-        Assert.Equal("val", reader.ReadTextString());
+        ReadStartArray(context); // outer
+        ReadStartArray(context); // inner
+        Assert.Equal("val", ReadTextString(context));
 
         // Should skip 0xFF, refill, then skip another 0xFF
-        reader.ReadEndArray();
-        reader.ReadEndArray();
+        ReadEndArray(context);
+        ReadEndArray(context);
 
-        Assert.Equal(CborReaderState.Finished, reader.PeekState());
+        Assert.Equal(CborReaderState.Finished, context.PeekState());
     }
 
     [Fact]
@@ -518,18 +644,18 @@ public class CborStreamReaderTests : IClassFixture<BufferSizeConfigFixture>
 
         byte[] bytes = writer.Encode();
         using var stream = new MemoryStream(bytes);
-        using var reader = new CborStreamReader(stream);
+        using var context = CreateContext(stream);
 
-        reader.ReadStartMap();
-        Assert.Equal("k1", reader.ReadTextString());
-        Assert.Equal(80, reader.ReadTextString().Length);
+        ReadStartMap(context);
+        Assert.Equal("k1", ReadTextString(context));
+        Assert.Equal(80, ReadTextString(context).Length);
 
-        Assert.Equal("k2", reader.ReadTextString());
+        Assert.Equal("k2", ReadTextString(context));
 
         // This should not throw or prematurely infer EndMap
-        Assert.Equal(80, reader.ReadTextString().Length);
+        Assert.Equal(80, ReadTextString(context).Length);
 
-        reader.ReadEndMap();
+        ReadEndMap(context);
     }
 
     [Fact]
@@ -543,14 +669,14 @@ public class CborStreamReaderTests : IClassFixture<BufferSizeConfigFixture>
 
         var bytes = writer.Encode();
         using var stream = new MemoryStream(bytes);
-        using var reader = new CborStreamReader(stream);
+        using var context = CreateContext(stream);
 
-        reader.ReadStartMap();
-        Assert.Equal("key", reader.ReadTextString());
-        Assert.Equal("value", reader.ReadTextString());
-        reader.ReadEndMap();
+        ReadStartMap(context);
+        Assert.Equal("key", ReadTextString(context));
+        Assert.Equal("value", ReadTextString(context));
+        ReadEndMap(context);
 
-        Assert.Equal(CborReaderState.Finished, reader.PeekState());
+        Assert.Equal(CborReaderState.Finished, context.PeekState());
     }
 
     [Fact]
@@ -570,23 +696,23 @@ public class CborStreamReaderTests : IClassFixture<BufferSizeConfigFixture>
         byte[] bytes = writer.Encode();
 
         using var stream = new MemoryStream(bytes);
-        using var reader = new CborStreamReader(stream);
+        using var context = CreateContext(stream);
 
-        reader.ReadStartMap();
-        Assert.Equal("outerKey1", reader.ReadTextString());
-        reader.ReadStartMap();
-        Assert.Equal("innerKey", reader.ReadTextString());
-        Assert.Equal("innerVal", reader.ReadTextString());
+        ReadStartMap(context);
+        Assert.Equal("outerKey1", ReadTextString(context));
+        ReadStartMap(context);
+        Assert.Equal("innerKey", ReadTextString(context));
+        Assert.Equal("innerVal", ReadTextString(context));
 
         // This ReadEndMap will bring us to the end of current buffer
-        reader.ReadEndMap(); // This will trigger refill internally if needed
+        ReadEndMap(context); // This will trigger refill internally if needed
 
         // Without a refill, the next ReadTextString() throws:
         // "No more CBOR data items to read in the current context."
-        Assert.Equal("outerKey2", reader.ReadTextString());
-        Assert.Equal("outerVal", reader.ReadTextString());
-        reader.ReadEndMap();
-        Assert.Equal(CborReaderState.Finished, reader.PeekState());
+        Assert.Equal("outerKey2", ReadTextString(context));
+        Assert.Equal("outerVal", ReadTextString(context));
+        ReadEndMap(context);
+        Assert.Equal(CborReaderState.Finished, context.PeekState());
     }
 
     [Fact]
@@ -606,22 +732,22 @@ public class CborStreamReaderTests : IClassFixture<BufferSizeConfigFixture>
         byte[] bytes = writer.Encode();
         var stream = new MemoryStream(bytes);
 
-        using var reader = new CborStreamReader(stream);
+        using var context = CreateContext(stream);
 
-        reader.ReadStartMap();                   // outer map
-        Assert.Equal("outerKey1", reader.ReadTextString());
+        ReadStartMap(context);                   // outer map
+        Assert.Equal("outerKey1", ReadTextString(context));
 
-        reader.ReadStartMap();                   // inner map
-        Assert.Equal("innerKey", reader.ReadTextString());
-        Assert.Equal(new string('A', 30), reader.ReadTextString());
+        ReadStartMap(context);                   // inner map
+        Assert.Equal("innerKey", ReadTextString(context));
+        Assert.Equal(new string('A', 30), ReadTextString(context));
 
-        reader.ReadEndMap();                     // This must succeed without triggering refill
+        ReadEndMap(context);                     // This must succeed without triggering refill
 
         // This next read should trigger refill and continue parsing correctly
-        Assert.Equal("outerKey2", reader.ReadTextString());
-        Assert.Equal("outerVal", reader.ReadTextString());
-        reader.ReadEndMap();                     // outer map
-        Assert.Equal(CborReaderState.Finished, reader.PeekState());
+        Assert.Equal("outerKey2", ReadTextString(context));
+        Assert.Equal("outerVal", ReadTextString(context));
+        ReadEndMap(context);                     // outer map
+        Assert.Equal(CborReaderState.Finished, context.PeekState());
     }
 
     [Fact]
@@ -639,14 +765,14 @@ public class CborStreamReaderTests : IClassFixture<BufferSizeConfigFixture>
         byte[] bytes = writer.Encode();
         var stream = new MemoryStream(bytes);
 
-        using var reader = new CborStreamReader(stream);
-        reader.ReadStartMap();
-        Assert.Equal("nested", reader.ReadTextString());
-        reader.ReadStartMap();
-        Assert.Equal("deep", reader.ReadTextString());
-        Assert.Equal("value", reader.ReadTextString());
-        reader.ReadEndMap(); // should correctly handle 0xFF at end
-        reader.ReadEndMap(); // should correctly handle 0xFF at end
+        using var context = CreateContext(stream);
+        ReadStartMap(context);
+        Assert.Equal("nested", ReadTextString(context));
+        ReadStartMap(context);
+        Assert.Equal("deep", ReadTextString(context));
+        Assert.Equal("value", ReadTextString(context));
+        ReadEndMap(context); // should correctly handle 0xFF at end
+        ReadEndMap(context); // should correctly handle 0xFF at end
     }
 
     [Fact]
@@ -663,19 +789,19 @@ public class CborStreamReaderTests : IClassFixture<BufferSizeConfigFixture>
         byte[] bytes = writer.Encode();
         var stream = new MemoryStream(bytes);
 
-        using var reader = new CborStreamReader(stream);
+        using var context = CreateContext(stream);
 
-        reader.ReadStartArray();
-        Assert.Equal(1, reader.ReadInt32());
-        Assert.Equal(200, reader.ReadTextString().Length);
-        Assert.Equal(3, reader.ReadInt32());
+        ReadStartArray(context);
+        Assert.Equal(1, ReadInt32(context));
+        Assert.Equal(200, ReadTextString(context).Length);
+        Assert.Equal(3, ReadInt32(context));
 
         // PeekState should return EndArray before the trailing value
-        Assert.Equal(CborReaderState.EndArray, reader.PeekState());
+        Assert.Equal(CborReaderState.EndArray, context.PeekState());
 
         // Reading EndArray moves reader to the next value
-        reader.ReadEndArray();
-        Assert.Equal(CborReaderState.UnsignedInteger, reader.PeekState());
+        ReadEndArray(context);
+        Assert.Equal(CborReaderState.UnsignedInteger, context.PeekState());
     }
 
     [Fact]
@@ -693,20 +819,20 @@ public class CborStreamReaderTests : IClassFixture<BufferSizeConfigFixture>
         byte[] bytes = writer.Encode();
         var stream = new MemoryStream(bytes);
 
-        using var reader = new CborStreamReader(stream);
+        using var context = CreateContext(stream);
 
-        reader.ReadStartMap();
-        Assert.Equal("a", reader.ReadTextString());
-        Assert.Equal(1, reader.ReadInt32());
-        Assert.Equal("b", reader.ReadTextString());
-        Assert.Equal(200, reader.ReadTextString().Length);
+        ReadStartMap(context);
+        Assert.Equal("a", ReadTextString(context));
+        Assert.Equal(1, ReadInt32(context));
+        Assert.Equal("b", ReadTextString(context));
+        Assert.Equal(200, ReadTextString(context).Length);
 
         // PeekState should return EndMap before the trailing value
-        Assert.Equal(CborReaderState.EndMap, reader.PeekState());
+        Assert.Equal(CborReaderState.EndMap, context.PeekState());
 
         // Reading EndMap moves reader to the next value
-        reader.ReadEndMap();
-        Assert.Equal(CborReaderState.UnsignedInteger, reader.PeekState());
+        ReadEndMap(context);
+        Assert.Equal(CborReaderState.UnsignedInteger, context.PeekState());
     }
 
     [Fact]
@@ -723,16 +849,16 @@ public class CborStreamReaderTests : IClassFixture<BufferSizeConfigFixture>
         byte[] bytes = writer.Encode();
         var stream = new MemoryStream(bytes);
 
-        using var reader = new CborStreamReader(stream);
+        using var context = CreateContext(stream);
 
-        reader.ReadStartArray();
+        ReadStartArray(context);
         for (int i = 0; i < 100; i++)
         {
-            Assert.Equal(i, reader.ReadInt32());
+            Assert.Equal(i, ReadInt32(context));
         }
 
         // PeekState should correctly report EndArray after last element
-        Assert.Equal(CborReaderState.EndArray, reader.PeekState());
+        Assert.Equal(CborReaderState.EndArray, context.PeekState());
     }
 
     [Fact]
@@ -750,17 +876,17 @@ public class CborStreamReaderTests : IClassFixture<BufferSizeConfigFixture>
         byte[] bytes = writer.Encode();
         var stream = new MemoryStream(bytes);
 
-        using var reader = new CborStreamReader(stream);
+        using var context = CreateContext(stream);
 
-        reader.ReadStartMap();
+        ReadStartMap(context);
         for (int i = 0; i < 25; i++)
         {
-            Assert.Equal("k" + i, reader.ReadTextString());
-            Assert.Equal(i, reader.ReadInt32());
+            Assert.Equal("k" + i, ReadTextString(context));
+            Assert.Equal(i, ReadInt32(context));
         }
 
         // PeekState should correctly report EndMap after last entry
-        Assert.Equal(CborReaderState.EndMap, reader.PeekState());
+        Assert.Equal(CborReaderState.EndMap, context.PeekState());
     }
 
 
@@ -792,27 +918,27 @@ public class CborStreamReaderTests : IClassFixture<BufferSizeConfigFixture>
         byte[] bytes = writer.Encode();
         var stream = new MemoryStream(bytes);
 
-        using var reader = new CborStreamReader(stream);
+        using var context = CreateContext(stream);
 
-        reader.ReadStartMap();
+        ReadStartMap(context);
 
-        Assert.Equal(100, reader.ReadTextString().Length);
-        reader.ReadStartMap();
-        Assert.Equal("InnerKey", reader.ReadTextString());
-        reader.ReadStartArray();
-        Assert.Equal(100, reader.ReadTextString().Length);
-        Assert.Equal(20, reader.ReadInt32());
-        reader.ReadEndArray();
-        reader.ReadEndMap();
+        Assert.Equal(100, ReadTextString(context).Length);
+        ReadStartMap(context);
+        Assert.Equal("InnerKey", ReadTextString(context));
+        ReadStartArray(context);
+        Assert.Equal(100, ReadTextString(context).Length);
+        Assert.Equal(20, ReadInt32(context));
+        ReadEndArray(context);
+        ReadEndMap(context);
 
         // Key2 -> inner map
-        Assert.Equal(CborReaderState.TextString, reader.PeekState());
-        Assert.Equal("Key2", reader.ReadTextString());
-        Assert.Equal(42, reader.ReadInt32());
-        reader.ReadEndMap();
+        Assert.Equal(CborReaderState.TextString, context.PeekState());
+        Assert.Equal("Key2", ReadTextString(context));
+        Assert.Equal(42, ReadInt32(context));
+        ReadEndMap(context);
 
 
-        Assert.Equal(CborReaderState.Finished, reader.PeekState());
+        Assert.Equal(CborReaderState.Finished, context.PeekState());
     }
 
     [Fact]
@@ -845,35 +971,35 @@ public class CborStreamReaderTests : IClassFixture<BufferSizeConfigFixture>
         byte[] bytes = writer.Encode();
         var stream = new MemoryStream(bytes);
 
-        using var reader = new CborStreamReader(stream);
+        using var context = CreateContext(stream);
 
-        reader.ReadStartArray();
+        ReadStartArray(context);
 
         // Inner arrays
-        reader.ReadStartArray();
-        Assert.Equal(new string('A', 50), reader.ReadTextString());
-        reader.ReadEndArray();
+        ReadStartArray(context);
+        Assert.Equal(new string('A', 50), ReadTextString(context));
+        ReadEndArray(context);
 
-        reader.ReadStartArray();
-        Assert.Equal(new string('B', 50), reader.ReadTextString());
-        reader.ReadEndArray();
+        ReadStartArray(context);
+        Assert.Equal(new string('B', 50), ReadTextString(context));
+        ReadEndArray(context);
 
-        reader.ReadStartArray();
-        Assert.Equal(new string('C', 50), reader.ReadTextString());
-        reader.ReadEndArray();
+        ReadStartArray(context);
+        Assert.Equal(new string('C', 50), ReadTextString(context));
+        ReadEndArray(context);
 
-        reader.ReadStartArray();
-        Assert.Equal(new string('D', 50), reader.ReadTextString());
-        reader.ReadEndArray();
+        ReadStartArray(context);
+        Assert.Equal(new string('D', 50), ReadTextString(context));
+        ReadEndArray(context);
 
         // PeekState should correctly indicate we are still inside the outer array
-        Assert.Equal(CborReaderState.UnsignedInteger, reader.PeekState());
+        Assert.Equal(CborReaderState.UnsignedInteger, context.PeekState());
 
         // Second item in outer array
-        Assert.Equal(42, reader.ReadInt32());
+        Assert.Equal(42, ReadInt32(context));
 
-        reader.ReadEndArray();
-        Assert.Equal(CborReaderState.Finished, reader.PeekState());
+        ReadEndArray(context);
+        Assert.Equal(CborReaderState.Finished, context.PeekState());
     }
 
     [Fact]
@@ -904,30 +1030,30 @@ public class CborStreamReaderTests : IClassFixture<BufferSizeConfigFixture>
         byte[] bytes = writer.Encode();
         var stream = new MemoryStream(bytes);
 
-        using var reader = new CborStreamReader(stream);
+        using var context = CreateContext(stream);
 
-        reader.ReadStartArray();
+        ReadStartArray(context);
 
         // Item 1
-        string longString = reader.ReadTextString();
+        string longString = ReadTextString(context);
         Assert.Equal(150, longString.Length);
 
         // Item 2: definite-length array
-        reader.ReadStartArray();
-        Assert.Equal(100, reader.ReadInt32());
-        Assert.Equal(200, reader.ReadInt32());
-        reader.ReadEndArray();
+        ReadStartArray(context);
+        Assert.Equal(100, ReadInt32(context));
+        Assert.Equal(200, ReadInt32(context));
+        ReadEndArray(context);
 
         // Item 3: indefinite-length array
-        reader.ReadStartArray();
-        Assert.Equal("inner1", reader.ReadTextString());
-        string longStringB = reader.ReadTextString();
+        ReadStartArray(context);
+        Assert.Equal("inner1", ReadTextString(context));
+        string longStringB = ReadTextString(context);
         Assert.Equal(120, longStringB.Length);
-        reader.ReadEndArray();
+        ReadEndArray(context);
 
-        reader.ReadEndArray();
+        ReadEndArray(context);
 
-        Assert.Equal(CborReaderState.Finished, reader.PeekState());
+        Assert.Equal(CborReaderState.Finished, context.PeekState());
     }
 
     [Fact]
@@ -961,33 +1087,33 @@ public class CborStreamReaderTests : IClassFixture<BufferSizeConfigFixture>
         byte[] bytes = writer.Encode();
         var stream = new MemoryStream(bytes);
 
-        using var reader = new CborStreamReader(stream);
+        using var context = CreateContext(stream);
 
-        reader.ReadStartMap();
+        ReadStartMap(context);
 
         // Pair 1
-        Assert.Equal("k1", reader.ReadTextString());
-        reader.ReadStartMap();
-        Assert.Equal("innerKey1", reader.ReadTextString());
-        string innerVal1 = reader.ReadTextString();
+        Assert.Equal("k1", ReadTextString(context));
+        ReadStartMap(context);
+        Assert.Equal("innerKey1", ReadTextString(context));
+        string innerVal1 = ReadTextString(context);
         Assert.Equal(130, innerVal1.Length);
-        Assert.Equal("innerKey2", reader.ReadTextString());
-        Assert.Equal(999, reader.ReadInt32());
-        reader.ReadEndMap();
+        Assert.Equal("innerKey2", ReadTextString(context));
+        Assert.Equal(999, ReadInt32(context));
+        ReadEndMap(context);
 
         // Pair 2
-        Assert.Equal("k2", reader.ReadTextString());
-        reader.ReadStartMap();
-        Assert.Equal("innerKey3", reader.ReadTextString());
-        Assert.Equal("innerVal3", reader.ReadTextString());
-        Assert.Equal("innerKey4", reader.ReadTextString());
-        string innerVal4 = reader.ReadTextString();
+        Assert.Equal("k2", ReadTextString(context));
+        ReadStartMap(context);
+        Assert.Equal("innerKey3", ReadTextString(context));
+        Assert.Equal("innerVal3", ReadTextString(context));
+        Assert.Equal("innerKey4", ReadTextString(context));
+        string innerVal4 = ReadTextString(context);
         Assert.Equal(140, innerVal4.Length);
-        reader.ReadEndMap();
+        ReadEndMap(context);
 
-        reader.ReadEndMap();
+        ReadEndMap(context);
 
-        Assert.Equal(CborReaderState.Finished, reader.PeekState());
+        Assert.Equal(CborReaderState.Finished, context.PeekState());
     }
 
     [Fact]
@@ -1017,30 +1143,30 @@ public class CborStreamReaderTests : IClassFixture<BufferSizeConfigFixture>
         byte[] bytes = writer.Encode();
         var stream = new MemoryStream(bytes);
 
-        using var reader = new CborStreamReader(stream);
+        using var context = CreateContext(stream);
 
-        reader.ReadStartArray();
+        ReadStartArray(context);
 
         // Item 1
-        string longString = reader.ReadTextString();
+        string longString = ReadTextString(context);
         Assert.Equal(150, longString.Length);
 
         // Item 2: definite-length array
-        reader.ReadStartArray();
-        Assert.Equal(100, reader.ReadInt32());
-        Assert.Equal(200, reader.ReadInt32());
-        reader.ReadEndArray();
+        ReadStartArray(context);
+        Assert.Equal(100, ReadInt32(context));
+        Assert.Equal(200, ReadInt32(context));
+        ReadEndArray(context);
 
         // Item 3: indefinite-length array
-        reader.ReadStartArray();
-        Assert.Equal("inner1", reader.ReadTextString());
-        string longStringB = reader.ReadTextString();
+        ReadStartArray(context);
+        Assert.Equal("inner1", ReadTextString(context));
+        string longStringB = ReadTextString(context);
         Assert.Equal(120, longStringB.Length);
-        reader.ReadEndArray();
+        ReadEndArray(context);
 
-        reader.ReadEndArray();
+        ReadEndArray(context);
 
-        Assert.Equal(CborReaderState.Finished, reader.PeekState());
+        Assert.Equal(CborReaderState.Finished, context.PeekState());
     }
 
     [Fact]
@@ -1073,33 +1199,33 @@ public class CborStreamReaderTests : IClassFixture<BufferSizeConfigFixture>
         byte[] bytes = writer.Encode();
         var stream = new MemoryStream(bytes);
 
-        using var reader = new CborStreamReader(stream);
+        using var context = CreateContext(stream);
 
-        reader.ReadStartMap();
+        ReadStartMap(context);
 
         // Pair 1
-        Assert.Equal("k1", reader.ReadTextString());
-        reader.ReadStartMap();
-        Assert.Equal("innerKey1", reader.ReadTextString());
-        string innerVal1 = reader.ReadTextString();
+        Assert.Equal("k1", ReadTextString(context));
+        ReadStartMap(context);
+        Assert.Equal("innerKey1", ReadTextString(context));
+        string innerVal1 = ReadTextString(context);
         Assert.Equal(130, innerVal1.Length);
-        Assert.Equal("innerKey2", reader.ReadTextString());
-        Assert.Equal(999, reader.ReadInt32());
-        reader.ReadEndMap();
+        Assert.Equal("innerKey2", ReadTextString(context));
+        Assert.Equal(999, ReadInt32(context));
+        ReadEndMap(context);
 
         // Pair 2
-        Assert.Equal("k2", reader.ReadTextString());
-        reader.ReadStartMap();
-        Assert.Equal("innerKey3", reader.ReadTextString());
-        Assert.Equal("innerVal3", reader.ReadTextString());
-        Assert.Equal("innerKey4", reader.ReadTextString());
-        string innerVal4 = reader.ReadTextString();
+        Assert.Equal("k2", ReadTextString(context));
+        ReadStartMap(context);
+        Assert.Equal("innerKey3", ReadTextString(context));
+        Assert.Equal("innerVal3", ReadTextString(context));
+        Assert.Equal("innerKey4", ReadTextString(context));
+        string innerVal4 = ReadTextString(context);
         Assert.Equal(140, innerVal4.Length);
-        reader.ReadEndMap();
+        ReadEndMap(context);
 
-        reader.ReadEndMap();
+        ReadEndMap(context);
 
-        Assert.Equal(CborReaderState.Finished, reader.PeekState());
+        Assert.Equal(CborReaderState.Finished, context.PeekState());
     }
 
     [Fact]
@@ -1150,52 +1276,52 @@ public class CborStreamReaderTests : IClassFixture<BufferSizeConfigFixture>
         var encoding = writer.Encode();
 
         using var stream = new MemoryStream(encoding);
-        var reader = new CborStreamReader(stream);
+        var context = CreateContext(stream);
 
-        reader.ReadStartArray();
+        ReadStartArray(context);
 
-        reader.ReadStartArray();
-        Assert.Equal(1, reader.ReadInt32());
-        var str1 = reader.ReadTextString();
+        ReadStartArray(context);
+        Assert.Equal(1, ReadInt32(context));
+        var str1 = ReadTextString(context);
         Assert.Equal(new string('a', 150), str1);
-        reader.ReadEndArray();
+        ReadEndArray(context);
 
-        reader.ReadStartArray();
-        reader.ReadStartArray();
-        Assert.Equal(2, reader.ReadInt32());
-        var bytes1 = reader.ReadByteString();
+        ReadStartArray(context);
+        ReadStartArray(context);
+        Assert.Equal(2, ReadInt32(context));
+        var bytes1 = ReadByteString(context);
         Assert.Equal(150, bytes1.Length);
-        reader.ReadEndArray();
-        reader.ReadEndArray();
+        ReadEndArray(context);
+        ReadEndArray(context);
 
-        reader.ReadStartMap();
+        ReadStartMap(context);
 
-        Assert.Equal(3, reader.ReadInt32());
-        reader.ReadStartArray();
-        var str2 = reader.ReadTextString();
+        Assert.Equal(3, ReadInt32(context));
+        ReadStartArray(context);
+        var str2 = ReadTextString(context);
         Assert.Equal(new string('b', 150), str2);
-        Assert.Equal(4, reader.ReadInt32());
-        reader.ReadEndArray();
+        Assert.Equal(4, ReadInt32(context));
+        ReadEndArray(context);
 
-        Assert.Equal(5, reader.ReadInt32());
-        reader.ReadStartMap();
-        Assert.Equal(6, reader.ReadInt32());
-        var bytes2 = reader.ReadByteString();
+        Assert.Equal(5, ReadInt32(context));
+        ReadStartMap(context);
+        Assert.Equal(6, ReadInt32(context));
+        var bytes2 = ReadByteString(context);
         Assert.Equal(150, bytes2.Length);
-        reader.ReadEndMap();
+        ReadEndMap(context);
 
-        reader.ReadEndMap();
+        ReadEndMap(context);
 
-        reader.ReadStartMap();
-        Assert.Equal(7, reader.ReadInt32());
-        reader.ReadStartMap();
-        Assert.Equal(8, reader.ReadInt32());
-        var str3 = reader.ReadTextString();
+        ReadStartMap(context);
+        Assert.Equal(7, ReadInt32(context));
+        ReadStartMap(context);
+        Assert.Equal(8, ReadInt32(context));
+        var str3 = ReadTextString(context);
         Assert.Equal(new string('c', 150), str3);
-        reader.ReadEndMap();
-        reader.ReadEndMap();
+        ReadEndMap(context);
+        ReadEndMap(context);
 
-        reader.ReadEndArray();
+        ReadEndArray(context);
     }
 }
 

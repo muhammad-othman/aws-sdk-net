@@ -51,8 +51,9 @@ namespace Amazon.ComputeOptimizer.Model.Internal.MarshallTransformations
             GetEC2InstanceRecommendationsResponse response = new GetEC2InstanceRecommendationsResponse();
             var reader = context.Reader;
             context.AddPathSegment("GetEC2InstanceRecommendations");
+            context.PeekState(); // ensure the map header is fully buffered
             reader.ReadStartMap();
-            while (reader.PeekState() != CborReaderState.EndMap)
+            while (context.PeekState() != CborReaderState.EndMap)
             {
                 string propertyName = reader.ReadTextString();
                 switch (propertyName)
@@ -82,7 +83,7 @@ namespace Amazon.ComputeOptimizer.Model.Internal.MarshallTransformations
                             break;
                         }
                     default:
-                        reader.SkipValue();
+                        context.SkipValue();
                         break;
                 }
             }

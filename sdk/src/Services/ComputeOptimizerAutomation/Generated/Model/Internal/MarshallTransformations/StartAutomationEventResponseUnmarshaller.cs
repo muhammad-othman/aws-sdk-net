@@ -51,8 +51,9 @@ namespace Amazon.ComputeOptimizerAutomation.Model.Internal.MarshallTransformatio
             StartAutomationEventResponse response = new StartAutomationEventResponse();
             var reader = context.Reader;
             context.AddPathSegment("StartAutomationEvent");
+            context.PeekState(); // ensure the map header is fully buffered
             reader.ReadStartMap();
-            while (reader.PeekState() != CborReaderState.EndMap)
+            while (context.PeekState() != CborReaderState.EndMap)
             {
                 string propertyName = reader.ReadTextString();
                 switch (propertyName)
@@ -82,7 +83,7 @@ namespace Amazon.ComputeOptimizerAutomation.Model.Internal.MarshallTransformatio
                             break;
                         }
                     default:
-                        reader.SkipValue();
+                        context.SkipValue();
                         break;
                 }
             }

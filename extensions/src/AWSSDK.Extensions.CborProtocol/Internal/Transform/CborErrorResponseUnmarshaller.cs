@@ -56,8 +56,9 @@ namespace Amazon.Extensions.CborProtocol.Internal.Transform
             };
 
             var reader = context.Reader;
+            context.PeekState(); // ensure the map header is fully buffered
             reader.ReadStartMap();
-            while (reader.PeekState() != CborReaderState.EndMap)
+            while (context.PeekState() != CborReaderState.EndMap)
             {
                 string propertyName = reader.ReadTextString().ToLowerInvariant();
                 switch (propertyName)
@@ -80,7 +81,7 @@ namespace Amazon.Extensions.CborProtocol.Internal.Transform
                             break;
                         }
                     default:
-                        reader.SkipValue();
+                        context.SkipValue();
                         break;
                 }
             }

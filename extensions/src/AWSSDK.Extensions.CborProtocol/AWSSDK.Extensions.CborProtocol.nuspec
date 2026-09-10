@@ -14,19 +14,19 @@
     <dependencies>
       <group targetFramework="net472">
         <dependency id="AWSSDK.Core" version="4.0.102.4" />
-        <dependency id="System.Formats.Cbor" version="9.0.5" />
+        <dependency id="System.Formats.Cbor" version="11.0.0-dev" />
       </group>
       <group targetFramework="netstandard2.0">
         <dependency id="AWSSDK.Core" version="4.0.102.4" />
-        <dependency id="System.Formats.Cbor" version="9.0.5" />
+        <dependency id="System.Formats.Cbor" version="11.0.0-dev" />
       </group>
       <group targetFramework="netcoreapp3.1">
         <dependency id="AWSSDK.Core" version="4.0.102.4" />
-        <dependency id="System.Formats.Cbor" version="9.0.5" />
+        <dependency id="System.Formats.Cbor" version="11.0.0-dev" />
       </group>
       <group targetFramework="net8.0">
         <dependency id="AWSSDK.Core" version="4.0.102.4" />
-        <dependency id="System.Formats.Cbor" version="9.0.5" />
+        <dependency id="System.Formats.Cbor" version="11.0.0-dev" />
       </group>
     </dependencies>
   </metadata>

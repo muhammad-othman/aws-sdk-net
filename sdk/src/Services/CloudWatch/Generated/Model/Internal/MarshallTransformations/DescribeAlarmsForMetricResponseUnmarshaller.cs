@@ -51,8 +51,9 @@ namespace Amazon.CloudWatch.Model.Internal.MarshallTransformations
             DescribeAlarmsForMetricResponse response = new DescribeAlarmsForMetricResponse();
             var reader = context.Reader;
             context.AddPathSegment("DescribeAlarmsForMetric");
+            context.PeekState(); // ensure the map header is fully buffered
             reader.ReadStartMap();
-            while (reader.PeekState() != CborReaderState.EndMap)
+            while (context.PeekState() != CborReaderState.EndMap)
             {
                 string propertyName = reader.ReadTextString();
                 switch (propertyName)
@@ -66,7 +67,7 @@ namespace Amazon.CloudWatch.Model.Internal.MarshallTransformations
                             break;
                         }
                     default:
-                        reader.SkipValue();
+                        context.SkipValue();
                         break;
                 }
             }

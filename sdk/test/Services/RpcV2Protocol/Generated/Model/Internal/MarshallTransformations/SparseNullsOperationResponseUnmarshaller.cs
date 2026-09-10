@@ -51,8 +51,9 @@ namespace Amazon.RpcV2Protocol.Model.Internal.MarshallTransformations
             SparseNullsOperationResponse response = new SparseNullsOperationResponse();
             var reader = context.Reader;
             context.AddPathSegment("SparseNullsOperation");
+            context.PeekState(); // ensure the map header is fully buffered
             reader.ReadStartMap();
-            while (reader.PeekState() != CborReaderState.EndMap)
+            while (context.PeekState() != CborReaderState.EndMap)
             {
                 string propertyName = reader.ReadTextString();
                 switch (propertyName)
@@ -74,7 +75,7 @@ namespace Amazon.RpcV2Protocol.Model.Internal.MarshallTransformations
                             break;
                         }
                     default:
-                        reader.SkipValue();
+                        context.SkipValue();
                         break;
                 }
             }

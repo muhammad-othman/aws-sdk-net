@@ -51,8 +51,9 @@ namespace Amazon.PartnerCentralRevenueMeasurement.Model.Internal.MarshallTransfo
             UpdateMarketplaceRevenueShareAllocationResponse response = new UpdateMarketplaceRevenueShareAllocationResponse();
             var reader = context.Reader;
             context.AddPathSegment("UpdateMarketplaceRevenueShareAllocation");
+            context.PeekState(); // ensure the map header is fully buffered
             reader.ReadStartMap();
-            while (reader.PeekState() != CborReaderState.EndMap)
+            while (context.PeekState() != CborReaderState.EndMap)
             {
                 string propertyName = reader.ReadTextString();
                 switch (propertyName)
@@ -146,7 +147,7 @@ namespace Amazon.PartnerCentralRevenueMeasurement.Model.Internal.MarshallTransfo
                             break;
                         }
                     default:
-                        reader.SkipValue();
+                        context.SkipValue();
                         break;
                 }
             }

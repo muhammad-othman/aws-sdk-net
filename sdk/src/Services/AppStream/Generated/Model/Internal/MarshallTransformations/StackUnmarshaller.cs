@@ -50,14 +50,14 @@ namespace Amazon.AppStream.Model.Internal.MarshallTransformations
             if (context.IsEmptyResponse)
                 return null;
             var reader = context.Reader;
-            if (reader.PeekState() == CborReaderState.Null)
+            if (context.PeekState() == CborReaderState.Null)
             {
                 reader.ReadNull();
                 return null;
             }
 
             reader.ReadStartMap();
-            while (reader.PeekState() != CborReaderState.EndMap)
+            while (context.PeekState() != CborReaderState.EndMap)
             {
                 string propertyName = reader.ReadTextString();
                 switch (propertyName)
@@ -191,7 +191,7 @@ namespace Amazon.AppStream.Model.Internal.MarshallTransformations
                             break;
                         }
                     default:
-                        reader.SkipValue();
+                        context.SkipValue();
                         break;
                 }
             }

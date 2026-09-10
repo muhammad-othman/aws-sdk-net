@@ -51,8 +51,9 @@ namespace Amazon.RpcV2Protocol.Model.Internal.MarshallTransformations
             RpcV2CborListsResponse response = new RpcV2CborListsResponse();
             var reader = context.Reader;
             context.AddPathSegment("RpcV2CborLists");
+            context.PeekState(); // ensure the map header is fully buffered
             reader.ReadStartMap();
-            while (reader.PeekState() != CborReaderState.EndMap)
+            while (context.PeekState() != CborReaderState.EndMap)
             {
                 string propertyName = reader.ReadTextString();
                 switch (propertyName)
@@ -138,7 +139,7 @@ namespace Amazon.RpcV2Protocol.Model.Internal.MarshallTransformations
                             break;
                         }
                     default:
-                        reader.SkipValue();
+                        context.SkipValue();
                         break;
                 }
             }

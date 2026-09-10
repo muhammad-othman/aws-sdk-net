@@ -51,8 +51,9 @@ namespace Amazon.BackupGateway.Model.Internal.MarshallTransformations
             UpdateGatewayInformationResponse response = new UpdateGatewayInformationResponse();
             var reader = context.Reader;
             context.AddPathSegment("UpdateGatewayInformation");
+            context.PeekState(); // ensure the map header is fully buffered
             reader.ReadStartMap();
-            while (reader.PeekState() != CborReaderState.EndMap)
+            while (context.PeekState() != CborReaderState.EndMap)
             {
                 string propertyName = reader.ReadTextString();
                 switch (propertyName)
@@ -66,7 +67,7 @@ namespace Amazon.BackupGateway.Model.Internal.MarshallTransformations
                             break;
                         }
                     default:
-                        reader.SkipValue();
+                        context.SkipValue();
                         break;
                 }
             }

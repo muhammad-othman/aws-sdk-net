@@ -51,8 +51,9 @@ namespace Amazon.Snowball.Model.Internal.MarshallTransformations
             ListServiceVersionsResponse response = new ListServiceVersionsResponse();
             var reader = context.Reader;
             context.AddPathSegment("ListServiceVersions");
+            context.PeekState(); // ensure the map header is fully buffered
             reader.ReadStartMap();
-            while (reader.PeekState() != CborReaderState.EndMap)
+            while (context.PeekState() != CborReaderState.EndMap)
             {
                 string propertyName = reader.ReadTextString();
                 switch (propertyName)
@@ -90,7 +91,7 @@ namespace Amazon.Snowball.Model.Internal.MarshallTransformations
                             break;
                         }
                     default:
-                        reader.SkipValue();
+                        context.SkipValue();
                         break;
                 }
             }

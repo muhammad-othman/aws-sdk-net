@@ -51,8 +51,9 @@ namespace Amazon.AppStream.Model.Internal.MarshallTransformations
             DescribeUsageReportSubscriptionsResponse response = new DescribeUsageReportSubscriptionsResponse();
             var reader = context.Reader;
             context.AddPathSegment("DescribeUsageReportSubscriptions");
+            context.PeekState(); // ensure the map header is fully buffered
             reader.ReadStartMap();
-            while (reader.PeekState() != CborReaderState.EndMap)
+            while (context.PeekState() != CborReaderState.EndMap)
             {
                 string propertyName = reader.ReadTextString();
                 switch (propertyName)
@@ -74,7 +75,7 @@ namespace Amazon.AppStream.Model.Internal.MarshallTransformations
                             break;
                         }
                     default:
-                        reader.SkipValue();
+                        context.SkipValue();
                         break;
                 }
             }
