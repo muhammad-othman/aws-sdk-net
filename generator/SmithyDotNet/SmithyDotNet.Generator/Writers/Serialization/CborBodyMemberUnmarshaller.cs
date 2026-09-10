@@ -7,11 +7,14 @@ namespace SmithyDotNet.Generator.Writers.Serialization;
 /// </summary>
 public static class CborBodyMemberUnmarshaller
 {
-    // Keys are member names (@jsonName is ignored); unknown keys are skipped.
+    // Keys are member names (@jsonName is ignored); unknown keys are skipped. Control flow goes through
+    // the context's refilling PeekState/SkipValue: once the context peek returns a token state, the
+    // single-token read for that token cannot run past the end of the buffered response data.
     internal static void WriteMapReadLoop(CodeWriter writer, List<Member> members)
     {
+        writer.WriteLine("context.PeekState(); // ensure the map header is fully buffered");
         writer.WriteLine("reader.ReadStartMap();");
-        writer.OpenBlock("while (reader.PeekState() != CborReaderState.EndMap)", () =>
+        writer.OpenBlock("while (context.PeekState() != CborReaderState.EndMap)", () =>
         {
             writer.WriteLine("var propertyName = reader.ReadTextString();");
             writer.OpenBlock("switch (propertyName)", () =>
@@ -32,7 +35,7 @@ public static class CborBodyMemberUnmarshaller
                 writer.WriteLine("default:");
                 writer.Indent(() =>
                 {
-                    writer.WriteLine("reader.SkipValue();");
+                    writer.WriteLine("context.SkipValue();");
                     writer.WriteLine("break;");
                 });
             });

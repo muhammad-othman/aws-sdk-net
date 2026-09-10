@@ -439,6 +439,14 @@ A `@sparse` element writes CBOR null per the spec; C2J writes `{}` for a null st
 list, but no CBOR service model uses `@sparse`. Documents and streaming blobs are rejected by
 `UnsupportedTraitValidator`.
 
+Unmarshalling control flow goes through `CborUnmarshallerContext`, which streams the response in chunks
+into an incremental `CborReader`: `context.PeekState()` (refills on `NeedsMoreData`; afterwards the
+single-token read for that token cannot run out of data) before `ReadStartMap` and as the map loop
+condition, and `context.SkipValue()` for unknown keys. Direct `reader.ReadX()` calls are only emitted
+where a `context.PeekState()` on the same token precedes them; multi-token values (strings, blobs,
+decimals) go through the `Cbor*Unmarshaller` runtime classes, which use the context's chunk-aware
+readers. Matches the C2J Cbor templates.
+
 Event streams follow the awsJson rules, plus `Accept: application/vnd.amazon.eventstream` for an output stream.
 Initial messages and modeled events are CBOR maps. Each modeled event is decoded without its message headers, so a response `@eventHeader` fails loud.
 

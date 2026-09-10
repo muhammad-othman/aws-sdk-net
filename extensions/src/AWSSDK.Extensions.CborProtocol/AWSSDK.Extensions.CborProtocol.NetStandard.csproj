@@ -41,8 +41,12 @@
     </Otherwise>
   </Choose>  	
 
+  <!-- Locally built System.Formats.Cbor from the dotnet/runtime repo that includes incremental
+       chunked reading support (https://github.com/dotnet/runtime/issues/129718). The package is
+       produced from ~/dev/runtime/artifacts/bin/System.Formats.Cbor and served from the local
+       feed declared in the repo-root NuGet.config. -->
   <ItemGroup>
-    <PackageReference Include="System.Formats.Cbor" Version="9.0.5" />
+    <PackageReference Include="System.Formats.Cbor" Version="11.0.0-dev" />
   </ItemGroup>
 
   <ItemGroup>

@@ -34,6 +34,10 @@ namespace Amazon.Extensions.CborProtocol.Internal.Transform
         {
             var reader = context.Reader;
 
+            // A single refilling peek: it drives the null and numeric-representation checks below,
+            // and it guarantees the next single-token read cannot run past the end of the buffer.
+            var state = context.PeekState();
+
             if (
                 (
                     typeof(T) == typeof(int?) ||
@@ -44,7 +48,7 @@ namespace Amazon.Extensions.CborProtocol.Internal.Transform
                     typeof(T) == typeof(float?) ||
                     typeof(T) == typeof(string)
                 )
-                && reader.PeekState() == CborReaderState.Null
+                && state == CborReaderState.Null
             )
             {
                 reader.ReadNull();
@@ -52,7 +56,8 @@ namespace Amazon.Extensions.CborProtocol.Internal.Transform
             }
 
             if (typeof(T) == typeof(string))
-                return (T)(object)reader.ReadTextString();
+                // Indefinite-length strings consume multiple tokens; the context reads them chunk by chunk.
+                return (T)(object)context.ReadTextString();
             if (typeof(T) == typeof(int))
                 return (T)(object)reader.ReadInt32();
             if (typeof(T) == typeof(int?))
@@ -62,21 +67,22 @@ namespace Amazon.Extensions.CborProtocol.Internal.Transform
             if (typeof(T) == typeof(long?))
                 return (T)(object)(long?)reader.ReadInt64();
             if (typeof(T) == typeof(decimal))
-                return (T)(object)reader.ReadDecimal();
+                // Decimal fractions consume multiple tokens (tag, array, exponent, mantissa).
+                return (T)(object)context.ReadDecimal();
             if (typeof(T) == typeof(decimal?))
-                return (T)(object)(decimal?)reader.ReadDecimal();
+                return (T)(object)(decimal?)context.ReadDecimal();
             if (typeof(T) == typeof(bool))
                 return (T)(object)reader.ReadBoolean();
             if (typeof(T) == typeof(bool?))
                 return (T)(object)(bool?)reader.ReadBoolean();
             if (typeof(T) == typeof(double))
-                return (T)(object)ReadDouble(reader);
+                return (T)(object)ReadDouble(reader, state);
             if (typeof(T) == typeof(double?))
-                return (T)(object)(double?)ReadDouble(reader);
+                return (T)(object)(double?)ReadDouble(reader, state);
             if (typeof(T) == typeof(float))
-                return (T)(object)ReadSingle(reader);
+                return (T)(object)ReadSingle(reader, state);
             if (typeof(T) == typeof(float?))
-                return (T)(object)(float?)ReadSingle(reader);
+                return (T)(object)(float?)ReadSingle(reader, state);
             if (typeof(T) == typeof(byte))
             {
                 int result = reader.ReadInt32();
@@ -92,9 +98,8 @@ namespace Amazon.Extensions.CborProtocol.Internal.Transform
             );
         }
 
-        private static double ReadDouble(CborStreamReader reader)
+        private static double ReadDouble(CborReader reader, CborReaderState state)
         {
-            var state = reader.PeekState();
             // CBOR values for doubles may sometimes be encoded as integers to save space
             // (e.g., when the original value was a whole number).
             if (state == CborReaderState.UnsignedInteger)
@@ -111,9 +116,8 @@ namespace Amazon.Extensions.CborProtocol.Internal.Transform
             }
         }
 
-        private static float ReadSingle(CborStreamReader reader)
+        private static float ReadSingle(CborReader reader, CborReaderState state)
         {
-            var state = reader.PeekState();
             // CBOR values for floats may sometimes be encoded as integers to save space
             // (e.g., when the original value was a whole number).
             if (state == CborReaderState.UnsignedInteger)
@@ -396,6 +400,7 @@ namespace Amazon.Extensions.CborProtocol.Internal.Transform
 
         public DateTime Unmarshall(CborUnmarshallerContext context)
         {
+            context.PeekState(); // ensure the tag token is fully buffered
             var tag = context.Reader.ReadTag();
             if (tag == CborTag.UnixTimeSeconds)
             {
@@ -421,7 +426,7 @@ namespace Amazon.Extensions.CborProtocol.Internal.Transform
 
         public DateTime? Unmarshall(CborUnmarshallerContext context)
         {
-            if (context.Reader.PeekState() == CborReaderState.Null)
+            if (context.PeekState() == CborReaderState.Null)
             {
                 context.Reader.ReadNull();
                 return null;
@@ -446,7 +451,7 @@ namespace Amazon.Extensions.CborProtocol.Internal.Transform
 
         public DateTime? Unmarshall(CborUnmarshallerContext context)
         {
-            if (context.Reader.PeekState() == CborReaderState.Null)
+            if (context.PeekState() == CborReaderState.Null)
             {
                 context.Reader.ReadNull();
                 return null;
@@ -471,13 +476,14 @@ namespace Amazon.Extensions.CborProtocol.Internal.Transform
 
         public MemoryStream Unmarshall(CborUnmarshallerContext context)
         {
-            if (context.Reader.PeekState() == CborReaderState.Null)
+            if (context.PeekState() == CborReaderState.Null)
             {
                 context.Reader.ReadNull();
                 return null;
             }
 
-            var bytes = context.Reader.ReadByteString();
+            // Indefinite-length byte strings consume multiple tokens; the context reads them chunk by chunk.
+            var bytes = context.ReadByteString();
             MemoryStream stream = new MemoryStream(bytes, 0, bytes.Length, true, true);
             return stream;
         }
@@ -503,9 +509,10 @@ namespace Amazon.Extensions.CborProtocol.Internal.Transform
         {
             var metadata = new ResponseMetadata();
             var reader = context.Reader;
+            context.PeekState(); // ensure the map header is fully buffered
             reader.ReadStartMap();
 
-            while (reader.PeekState() != CborReaderState.EndMap)
+            while (context.PeekState() != CborReaderState.EndMap)
             {
                 string propertyName = reader.ReadTextString();
 
@@ -516,7 +523,7 @@ namespace Amazon.Extensions.CborProtocol.Internal.Transform
                         break;
 
                     default:
-                        reader.SkipValue();
+                        context.SkipValue();
                         break;
                 }
             }
@@ -566,7 +573,7 @@ namespace Amazon.Extensions.CborProtocol.Internal.Transform
         {
             var reader = context.Reader;
 
-            if (reader.PeekState() == CborReaderState.Null)
+            if (context.PeekState() == CborReaderState.Null)
             {
                 reader.ReadNull();
                 return AWSConfigs.InitializeCollections ? new List<T>() : null;
@@ -575,7 +582,7 @@ namespace Amazon.Extensions.CborProtocol.Internal.Transform
             reader.ReadStartArray();
             var list = new AlwaysSendList<T>();
 
-            while (reader.PeekState() != CborReaderState.EndArray)
+            while (context.PeekState() != CborReaderState.EndArray)
             {
                 list.Add(itemUnmarshaller.Unmarshall(context));
             }
@@ -614,7 +621,7 @@ namespace Amazon.Extensions.CborProtocol.Internal.Transform
         {
             var reader = context.Reader;
 
-            if (reader.PeekState() == CborReaderState.Null)
+            if (context.PeekState() == CborReaderState.Null)
             {
                 reader.ReadNull();
                 return AWSConfigs.InitializeCollections ? new Dictionary<TKey, TValue>() : null;
@@ -623,7 +630,7 @@ namespace Amazon.Extensions.CborProtocol.Internal.Transform
             reader.ReadStartMap();
             var dictionary = new AlwaysSendDictionary<TKey, TValue>();
 
-            while (reader.PeekState() != CborReaderState.EndMap)
+            while (context.PeekState() != CborReaderState.EndMap)
             {
                 var pair = kvUnmarshaller.Unmarshall(context);
 

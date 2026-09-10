@@ -53,7 +53,7 @@ public sealed class CborStructureUnmarshallerWriter(GenerationContext context, s
                     else
                     {
                         writer.WriteLine("var reader = context.Reader;");
-                        writer.OpenBlock("if (reader.PeekState() == CborReaderState.Null)", () =>
+                        writer.OpenBlock("if (context.PeekState() == CborReaderState.Null)", () =>
                         {
                             writer.WriteLine("reader.ReadNull();");
                             writer.WriteLine("return null;");

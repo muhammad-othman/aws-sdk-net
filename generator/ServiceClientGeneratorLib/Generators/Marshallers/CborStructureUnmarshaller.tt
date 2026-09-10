@@ -37,7 +37,7 @@ namespace <#=this.Config.Namespace #>.Model.Internal.MarshallTransformations
         if(eventPayloadMember.ModelShape.IsString)
         {
 #>
-            unmarshalledObject.<#=eventPayloadMember.PropertyName#> = reader.ReadTextString();
+            unmarshalledObject.<#=eventPayloadMember.PropertyName#> = context.ReadTextString();
 <#
         }
 #>
@@ -45,7 +45,7 @@ namespace <#=this.Config.Namespace #>.Model.Internal.MarshallTransformations
         else
         {
 #>
-            unmarshalledObject.<#=eventPayloadMember.PropertyName#> = reader.ReadByteString();
+            unmarshalledObject.<#=eventPayloadMember.PropertyName#> = context.ReadByteString();
 <#
         }
 #>
@@ -56,14 +56,14 @@ namespace <#=this.Config.Namespace #>.Model.Internal.MarshallTransformations
     if(this.Structure != null && (this.Structure.HasImplicitEventPayloadMembers() || !this.Structure.IsEvent))
     {
 #>
-            if (reader.PeekState() == CborReaderState.Null)
+            if (context.PeekState() == CborReaderState.Null)
             {
                 reader.ReadNull();
                 return null;
             }
 
             reader.ReadStartMap();
-            while (reader.PeekState() != CborReaderState.EndMap)
+            while (context.PeekState() != CborReaderState.EndMap)
             {
                 string propertyName = reader.ReadTextString();
                 switch (propertyName)
@@ -84,7 +84,7 @@ namespace <#=this.Config.Namespace #>.Model.Internal.MarshallTransformations
         }
 #>
                     default:
-                        reader.SkipValue();
+                        context.SkipValue();
                         break;
                 }
             }

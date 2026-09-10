@@ -109,13 +109,14 @@ public class RpcV2CborCodegenTests
         var source = ResponseUnmarshaller("Put");
 
         Assert.Contains("public partial class PutResponseUnmarshaller : CborResponseUnmarshaller", source);
+        Assert.Contains("while (context.PeekState() != CborReaderState.EndMap)", source);
         Assert.Contains("reader.ReadStartMap();", source);
         Assert.Contains("""case "count":""", source);
         Assert.Contains("unmarshalledObject.Count = CborNullableIntUnmarshaller.Instance.Unmarshall(context);", source);
         Assert.Contains("unmarshalledObject.When = CborNullableDateTimeUnmarshaller.Instance.Unmarshall(context);", source);
         Assert.Contains("new CborListUnmarshaller<Item, ItemUnmarshaller>(ItemUnmarshaller.Instance).Unmarshall(context);", source);
         Assert.Contains("new CborDictionaryUnmarshaller<string, string, CborStringUnmarshaller, CborStringUnmarshaller>(CborStringUnmarshaller.Instance, CborStringUnmarshaller.Instance).Unmarshall(context);", source);
-        Assert.Contains("reader.SkipValue();", source);
+        Assert.Contains("context.SkipValue();", source);
         Assert.Contains("AwsQueryCompatibleErrorHandler.ApplyQueryErrorHeader(errorResponse, context.ResponseData);", source);
         Assert.Contains("""if (errorTypeName != null && errorTypeName.Equals("Broken"))""", source);
         Assert.Contains("return BrokenExceptionUnmarshaller.Instance.Unmarshall(contextCopy, errorResponse);", source);
@@ -130,7 +131,7 @@ public class RpcV2CborCodegenTests
             .Write(Context.Structures[Item], TestContext.Current.CancellationToken);
 
         Assert.Contains("public partial class ItemUnmarshaller : ICborUnmarshaller<Item, CborUnmarshallerContext>", source);
-        Assert.Contains("if (reader.PeekState() == CborReaderState.Null)", source);
+        Assert.Contains("if (context.PeekState() == CborReaderState.Null)", source);
         Assert.Contains("unmarshalledObject.Score = CborNullableFloatUnmarshaller.Instance.Unmarshall(context);", source);
     }
 
