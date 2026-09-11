@@ -15,6 +15,7 @@
 
 using System;
 using System.Buffers;
+using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Formats.Cbor;
 using System.IO;
@@ -232,39 +233,57 @@ namespace Amazon.Extensions.CborProtocol.Internal.Transform
             }
         }
 
+        // The largest reasonable encoding of a decimal fraction whose value fits a .NET decimal:
+        // tag 4, array(2) header, and an int64 exponent at their maximum (non-canonical) width of
+        // 9 bytes each, plus a bignum mantissa (tag 2/3 + byte string header, 9 bytes each) holding
+        // the 12 bytes of a 96-bit decimal mantissa with a redundant leading zero: 58 bytes total.
+        private const int LargestDecimalFractionEncodingSize = 64;
+
         /// <summary>
         /// Reads a CBOR decimal fraction (tag 4), reading more data from the response stream as
         /// needed. A decimal fraction spans multiple tokens (tag, array, exponent, mantissa), so
-        /// the whole value is first buffered by skipping it — <see cref="CborReader.TrySkipValue"/>
-        /// only succeeds once the complete value is available — and its bytes, still present in the
-        /// buffer, are then re-parsed with a standalone reader. This avoids reimplementing the
-        /// decimal composition rules (including big-integer mantissas) that the reader already has.
+        /// <see cref="PeekState"/>'s single-token guarantee is not enough. Instead, the buffer is
+        /// refilled until it holds at least <see cref="LargestDecimalFractionEncodingSize"/> bytes,
+        /// after which the value is read directly.
         /// </summary>
         public decimal ReadDecimal()
         {
-            if (PeekState() != CborReaderState.Tag)
+            while (Reader.BytesRemaining < LargestDecimalFractionEncodingSize && !_isFinalBlock)
             {
-                // Not a tagged value; let the reader report the mismatch as it normally would.
-                return Reader.ReadDecimal();
-            }
-
-            int remainingBeforeValue;
-            while (true)
-            {
-                remainingBeforeValue = Reader.BytesRemaining;
-                if (Reader.TrySkipValue())
-                {
-                    break;
-                }
-
                 RefillBuffer();
             }
 
-            int valueStart = _currentChunkSize - remainingBeforeValue;
-            int valueLength = remainingBeforeValue - Reader.BytesRemaining;
+            try
+            {
+                return Reader.ReadDecimal();
+            }
+            catch (CborContentException) when (!_isFinalBlock)
+            {
+                // Only reachable when the value is truncated at the end of the buffer despite the
+                // sizing above, i.e. a decimal encoded with redundant padding (a leading-zero or
+                // indefinite-length bignum mantissa) that exceeds the threshold. ReadDecimal rolls
+                // the reader back on failure, so buffer the whole value by skipping it — TrySkipValue
+                // only succeeds once the complete value is available — and re-parse its bytes, still
+                // present in the buffer, with a standalone reader. A genuinely malformed value
+                // surfaces the same error from the skip or the re-parse.
+                int remainingBeforeValue;
+                while (true)
+                {
+                    remainingBeforeValue = Reader.BytesRemaining;
+                    if (Reader.TrySkipValue())
+                    {
+                        break;
+                    }
 
-            var valueReader = new CborReader(new ReadOnlyMemory<byte>(_buffer, valueStart, valueLength), _readerOptions);
-            return valueReader.ReadDecimal();
+                    RefillBuffer();
+                }
+
+                int valueStart = _currentChunkSize - remainingBeforeValue;
+                int valueLength = remainingBeforeValue - Reader.BytesRemaining;
+
+                var valueReader = new CborReader(new ReadOnlyMemory<byte>(_buffer, valueStart, valueLength), _readerOptions);
+                return valueReader.ReadDecimal();
+            }
         }
 
         /// <summary>
@@ -279,10 +298,17 @@ namespace Amazon.Extensions.CborProtocol.Internal.Transform
             int leftoverBytesCount = Reader.BytesRemaining;
             int leftoverStartIndex = _currentChunkSize - leftoverBytesCount;
 
-            if (leftoverBytesCount >= _buffer.Length)
+            // If the incomplete item is a definite-length string, size the buffer for the whole
+            // token up front so it is read with a single grow-and-copy instead of repeated
+            // doublings that each re-copy the accumulated data.
+            int pendingTokenSize = GetPendingDefiniteLengthStringTokenSize(leftoverStartIndex, leftoverBytesCount);
+            int requiredCapacity = Math.Max(pendingTokenSize, leftoverBytesCount);
+
+            if (requiredCapacity >= _buffer.Length)
             {
-                // The unread data fills the entire buffer; grow it so the next stream read can make progress.
-                var newBuffer = ArrayPool<byte>.Shared.Rent(_buffer.Length * 2);
+                // Either the pending token is known to exceed the current buffer, or the unread
+                // data fills it entirely; grow so the next stream read can make progress.
+                var newBuffer = ArrayPool<byte>.Shared.Rent(Math.Max(requiredCapacity, _buffer.Length * 2));
                 Buffer.BlockCopy(_buffer, leftoverStartIndex, newBuffer, 0, leftoverBytesCount);
                 ArrayPool<byte>.Shared.Return(_buffer);
                 _buffer = newBuffer;
@@ -302,6 +328,78 @@ namespace Amazon.Extensions.CborProtocol.Internal.Transform
             Reader.SlideData(newMemorySlice, _isFinalBlock);
 
             _logger.DebugFormat("Buffer refilled: read {0} byte(s), total in buffer now: {1}.", bytesReadFromStream, _currentChunkSize);
+        }
+
+        /// <summary>
+        /// Returns the total encoded size (header + contents) of the next data item when it is a
+        /// definite-length text or byte string whose length header is already buffered, or 0 when
+        /// the size cannot be determined (other item types, indefinite-length strings, a not yet
+        /// fully buffered header, or a declared length too large for a single buffer).
+        ///
+        /// This peeks at the CBOR string header directly because <see cref="CborReader"/> reports
+        /// only that more data is needed, not how much. <see cref="RefillBuffer"/> is always
+        /// entered at a data item boundary (<see cref="CborReader.PeekState"/> does not advance the
+        /// reader and <see cref="CborReader.TrySkipValue"/> rolls back on failure), so the unread
+        /// bytes start with an item's initial byte.
+        /// </summary>
+        private int GetPendingDefiniteLengthStringTokenSize(int unreadStartIndex, int unreadBytesCount)
+        {
+            const int MajorTypeByteString = 2;
+            const int MajorTypeTextString = 3;
+
+            if (unreadBytesCount == 0)
+                return 0;
+
+            byte initialByte = _buffer[unreadStartIndex];
+            int majorType = initialByte >> 5;
+            if (majorType != MajorTypeByteString && majorType != MajorTypeTextString)
+                return 0;
+
+            int additionalInfo = initialByte & 0b0001_1111;
+
+            int headerSize;
+            ulong declaredLength;
+            var argument = _buffer.AsSpan(unreadStartIndex + 1, Math.Max(unreadBytesCount - 1, 0));
+
+            if (additionalInfo < 24)
+            {
+                headerSize = 1;
+                declaredLength = (ulong)additionalInfo;
+            }
+            else if (additionalInfo == 24 && argument.Length >= sizeof(byte))
+            {
+                headerSize = 1 + sizeof(byte);
+                declaredLength = argument[0];
+            }
+            else if (additionalInfo == 25 && argument.Length >= sizeof(ushort))
+            {
+                headerSize = 1 + sizeof(ushort);
+                declaredLength = BinaryPrimitives.ReadUInt16BigEndian(argument);
+            }
+            else if (additionalInfo == 26 && argument.Length >= sizeof(uint))
+            {
+                headerSize = 1 + sizeof(uint);
+                declaredLength = BinaryPrimitives.ReadUInt32BigEndian(argument);
+            }
+            else if (additionalInfo == 27 && argument.Length >= sizeof(ulong))
+            {
+                headerSize = 1 + sizeof(ulong);
+                declaredLength = BinaryPrimitives.ReadUInt64BigEndian(argument);
+            }
+            else
+            {
+                // Indefinite-length string, reserved encoding, or the length header itself is not
+                // fully buffered yet; fall back to the default growth strategy.
+                return 0;
+            }
+
+            if (declaredLength > (ulong)(int.MaxValue - headerSize))
+            {
+                // Can never fit a single buffer; the reader reports this as malformed content.
+                return 0;
+            }
+
+            return headerSize + (int)declaredLength;
         }
 
         /// <summary>

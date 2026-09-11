@@ -519,6 +519,30 @@ public class CborUnmarshallerContextTests : IClassFixture<BufferSizeConfigFixtur
     }
 
     [Fact]
+    public void Unmarshall_Decimal_OversizedBignumEncoding_CrossingBufferBoundary()
+    {
+        // A decimal fraction whose bignum mantissa is padded with redundant leading zeros,
+        // exceeding both the direct-read size threshold and the (test-sized) buffer, which
+        // forces ReadDecimal's buffer-whole-value-and-reparse fallback.
+        var mantissa = new byte[101];
+        mantissa[100] = 0x01; // BigInteger value 1
+
+        var writer = new CborWriter();
+        writer.WriteTag(CborTag.DecimalFraction);
+        writer.WriteStartArray(2);
+        writer.WriteInt32(0); // exponent
+        writer.WriteTag(CborTag.UnsignedBigNum);
+        writer.WriteByteString(mantissa);
+        writer.WriteEndArray();
+
+        var stream = new MemoryStream(writer.Encode());
+        using var context = CreateContext(stream);
+
+        Assert.Equal(1m, context.ReadDecimal());
+        Assert.Equal(CborReaderState.Finished, context.PeekState());
+    }
+
+    [Fact]
     public void Unmarshall_CborTags()
     {
         var writer = new CborWriter();
