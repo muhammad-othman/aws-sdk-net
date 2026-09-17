@@ -28,24 +28,41 @@ namespace SDKDocGenerator.Writers
             }
         }
 
-        public void Write()
+        /// <summary>
+        /// Loads the embedded template and applies <see cref="ReplaceTokens"/>.
+        /// </summary>
+        protected string LoadAndReplace()
         {
             var templateName = GetTemplateName();
             using (var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("SDKDocGenerator.Templates." + templateName))
             using (var reader = new StreamReader(stream))
             {
-                var templateBody = reader.ReadToEnd();
-                var finalBody = ReplaceTokens(templateBody);
+                return ReplaceTokens(reader.ReadToEnd());
+            }
+        }
 
-                var templateOutput = TemplateOutputPath;
-                var outputPath = Path.GetDirectoryName(templateOutput);
-                if (!Directory.Exists(outputPath))
-                    Directory.CreateDirectory(outputPath);
+        /// <summary>
+        /// Hook for subclasses to wrap or transform the token-replaced template
+        /// before it is written to disk (e.g. LandingPageWriter wraps it in the
+        /// shared DocShell chrome). Defaults to identity.
+        /// </summary>
+        protected virtual string ComposeBody(string replacedTemplate)
+        {
+            return replacedTemplate;
+        }
 
-                using (var writer = new StreamWriter(templateOutput))
-                {
-                    writer.Write(finalBody);
-                }
+        public virtual void Write()
+        {
+            var finalBody = ComposeBody(LoadAndReplace());
+
+            var templateOutput = TemplateOutputPath;
+            var outputPath = Path.GetDirectoryName(templateOutput);
+            if (!Directory.Exists(outputPath))
+                Directory.CreateDirectory(outputPath);
+
+            using (var writer = new StreamWriter(templateOutput))
+            {
+                writer.Write(finalBody);
             }
         }
 

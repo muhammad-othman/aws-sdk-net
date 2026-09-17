@@ -59,6 +59,11 @@ namespace SDKDocGenerator
 
             Options = options;
 
+            // Fingerprint the static CSS/JS before any page is written so every
+            // emitted asset link carries a cache-busting ?v=<hash>.
+            if (string.IsNullOrEmpty(Options.AssetVersion))
+                Options.AssetVersion = ComputeAssetVersion();
+
             Trace.Listeners.Add(new ConditionalConsoleTraceListener(Options.Verbose));
 
             if (Options.TestMode)
@@ -69,6 +74,13 @@ namespace SDKDocGenerator
                 Info("ERROR: SDKAssembliesRoot option not set");
                 return -1;
             }
+
+            // Fingerprint the inputs that decide the runtime-fetched data files so the
+            // client can cache-bust them (needs SDKAssembliesRoot, so after the check,
+            // and AssetVersion, so after that). Must land before the first page is
+            // written: every page embeds this as data-datav.
+            if (string.IsNullOrEmpty(Options.DataVersion))
+                Options.DataVersion = ComputeDataVersion();
 
             if (Options.Verbose)
             {
@@ -278,6 +290,125 @@ namespace SDKDocGenerator
             Info("...platform set to '{0}'", Options.Platform);
             Info("...services set to {0}", string.Join(",", Options.Services));
             Info("");
+        }
+
+        /// <summary>
+        /// Short content hash of the shipped CSS/JS assets (the output-files/resources
+        /// folder next to the generator assembly — the same files FolderCopy publishes).
+        /// Deterministic across runs: committed docs churn only when assets change.
+        /// Returns null (no versioning) if anything goes wrong — unversioned links
+        /// still work, they just cache like before.
+        /// </summary>
+        private static string ComputeAssetVersion()
+        {
+            try
+            {
+                var resourcesDir = Path.Combine(
+                    Directory.GetParent(typeof(SdkDocGenerator).Assembly.Location).FullName,
+                    "output-files", "resources");
+                if (!Directory.Exists(resourcesDir))
+                    return null;
+
+                using (var sha = System.Security.Cryptography.SHA256.Create())
+                using (var buffer = new MemoryStream())
+                {
+                    var assetFiles = Directory.GetFiles(resourcesDir)
+                        .Where(f => f.EndsWith(".css", StringComparison.OrdinalIgnoreCase)
+                                 || f.EndsWith(".js", StringComparison.OrdinalIgnoreCase))
+                        .OrderBy(f => Path.GetFileName(f), StringComparer.Ordinal)
+                        .ToList();
+                    if (assetFiles.Count == 0)
+                        return null;
+
+                    foreach (var file in assetFiles)
+                    {
+                        var bytes = File.ReadAllBytes(file);
+                        buffer.Write(bytes, 0, bytes.Length);
+                    }
+                    var hash = sha.ComputeHash(buffer.ToArray());
+                    return BitConverter.ToString(hash, 0, 4).Replace("-", "").ToLowerInvariant();
+                }
+            }
+            catch (Exception)
+            {
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Short hash over everything that decides the content of the runtime-fetched
+        /// data files (toc.json, search-index*.json, _sdk-versions.json), used by the
+        /// client to cache-bust them with ?v=. AssetVersion can't serve this purpose
+        /// on its own because the static assets are unchanged on a data-only release.
+        /// <para>
+        /// This has to be computable BEFORE the first page is written — every page
+        /// embeds it as data-datav, and pages are generated long before TOCWriter
+        /// emits the data files — so it hashes the generation's INPUTS rather than
+        /// its output:
+        /// </para>
+        /// <list type="bullet">
+        /// <item>the SDK version manifest, which moves on every SDK release, i.e.
+        /// whenever the documented API surface moves;</item>
+        /// <item>AssetVersion, so a change to the client that reads these files can
+        /// never be paired with a copy written for the old contract (toc.json carries
+        /// no format version of its own). The cost is that an assets-only republish
+        /// also re-downloads the data — cheap, since assets and data ship together;</item>
+        /// <item>the search index format version, the content sub-folder that hrefs
+        /// are built from, and the platform, all of which change the emitted data;</item>
+        /// <item>the generator's own assembly version, so a released generator change
+        /// that reshapes the data moves the URLs too.</item>
+        /// </list>
+        /// <para>
+        /// Deterministic across runs of the same release (no timestamps), so committed
+        /// docs only churn when one of those inputs actually changes. Null disables
+        /// versioning; unversioned links still work, they just cache like before.
+        /// </para>
+        /// <para>
+        /// Residual gap: an UNRELEASED generator edit that changes the data without
+        /// touching any input above (same SDK, same assets, same assembly version)
+        /// leaves the data URLs unchanged, so a cache may still pair new pages with
+        /// old data. The backstop is the search index's generation token, which is a
+        /// content hash — the worker detects the mismatched pair and re-fetches past
+        /// the cache instead of failing (see search-worker.js), and toc.json staleness
+        /// degrades to a missing entry rather than a wrong one.
+        /// </para>
+        /// </summary>
+        private string ComputeDataVersion()
+        {
+            try
+            {
+                if (!File.Exists(Options.SDKVersionFilePath))
+                    return null;
+
+                var generatorVersion = typeof(SdkDocGenerator).Assembly.GetName().Version;
+                var inputs = string.Join("\n", new[]
+                {
+                    Options.AssetVersion ?? string.Empty,
+                    Options.ContentSubFolderName ?? string.Empty,
+                    Options.Platform ?? string.Empty,
+                    global::SDKDocGenerator.Writers.TOCWriter.SearchIndexFormatVersion
+                        .ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    generatorVersion == null ? string.Empty : generatorVersion.ToString()
+                });
+
+                using (var sha = System.Security.Cryptography.SHA256.Create())
+                using (var crypto = new System.Security.Cryptography.CryptoStream(
+                           Stream.Null, sha, System.Security.Cryptography.CryptoStreamMode.Write))
+                {
+                    var manifest = File.ReadAllBytes(Options.SDKVersionFilePath);
+                    crypto.Write(manifest, 0, manifest.Length);
+                    // Leading separator: the manifest is JSON and can't contain a raw
+                    // newline at top level, so no input can be absorbed into another.
+                    var tail = System.Text.Encoding.UTF8.GetBytes("\n" + inputs);
+                    crypto.Write(tail, 0, tail.Length);
+                    crypto.FlushFinalBlock();
+                    return BitConverter.ToString(sha.Hash, 0, 4).Replace("-", "").ToLowerInvariant();
+                }
+            }
+            catch (Exception)
+            {
+                return null;
+            }
         }
 
         /// <summary>

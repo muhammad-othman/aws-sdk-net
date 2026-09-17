@@ -85,7 +85,10 @@ namespace SDKDocGenerator.Writers
             writer.WriteLine("</td>");
 
             writer.WriteLine("<td>");
-            writer.WriteLine(condition);
+            // The condition is doc-comment text (XElement.Value, already
+            // entity-decoded) — encode it so markup in an <exception> body can't
+            // reach the page as live elements.
+            writer.WriteLine(System.Net.WebUtility.HtmlEncode(condition));
             writer.WriteLine("</td>");
 
             writer.WriteLine("</tr>");

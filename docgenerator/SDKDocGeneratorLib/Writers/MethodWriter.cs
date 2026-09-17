@@ -98,7 +98,10 @@ namespace SDKDocGenerator.Writers
                     var returnDoc = NDocUtilities.FindReturnDocumentation(ndoc);
                     if (returnDoc != null)
                     {
-                        writer.WriteLine("<div class=\"returnTypeDoc\">{0}</div>", returnDoc);
+                        // XElement.Value is decoded doc-comment text (element tags already
+                        // stripped) — encode it, or entity-encoded markup in a service
+                        // model's returns docs comes back to life on the page.
+                        writer.WriteLine("<div class=\"returnTypeDoc\">{0}</div>", System.Net.WebUtility.HtmlEncode(returnDoc));
                     }
                 }
 

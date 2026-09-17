@@ -736,7 +736,9 @@ namespace SDKDocGenerator
                 }
                 else if (this.IsSystemNamespace)
                 {
-                    url = string.Format(NDocUtilities.MSDN_TYPE_URL_PATTERN, this.GetDisplayName(true).ToLower());
+                    // ToLowerInvariant: URL path segment, must not vary with the build
+                    // host's locale (tr/az lowercase 'I' to dotless 'ı').
+                    url = string.Format(NDocUtilities.MSDN_TYPE_URL_PATTERN, this.GetDisplayName(true).ToLowerInvariant());
                     target = " target=_new";
                     label = nameOrFullName;
                 }

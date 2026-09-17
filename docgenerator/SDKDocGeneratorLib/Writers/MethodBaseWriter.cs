@@ -43,8 +43,11 @@ namespace SDKDocGenerator.Writers
 
                             writer.WriteLine("Type: {0}<br />", paramType.CreateReferenceHtml(fullTypeName: true));
                             
+                            // XElement.Value is decoded doc-comment text (element tags already
+                            // stripped) — encode it, or entity-encoded markup in a service
+                            // model's param docs comes back to life on the page.
                             var doc = NDocUtilities.FindParameterDocumentation(ndoc, parameter.Name);
-                            writer.WriteLine("<p>{0}</p>", doc);
+                            writer.WriteLine("<p>{0}</p>", System.Net.WebUtility.HtmlEncode(doc));
 
                         writer.WriteLine("</dd>");
 

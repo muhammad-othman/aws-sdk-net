@@ -102,6 +102,29 @@ namespace SDKDocGenerator
         public string BJSDocsDomain { get; set; }
 
         /// <summary>
+        /// Content fingerprint of the static CSS/JS assets, appended to their URLs
+        /// as ?v=&lt;hash&gt; so a CDN can cache them forever yet can never pair new
+        /// HTML with stale assets. Computed once per run by SdkDocGenerator from the
+        /// asset bytes (not a timestamp) so committed docs only change when the
+        /// assets themselves do. Null disables versioning.
+        /// </summary>
+        public string AssetVersion { get; set; }
+
+        /// <summary>
+        /// Content fingerprint for the runtime-fetched data files (toc.json,
+        /// search-index.json, _sdk-versions.json), appended by the client runtime as
+        /// ?v=&lt;hash&gt;. Distinct from AssetVersion because the data changes on every
+        /// SDK release while the static assets usually don't — the asset hash alone
+        /// could never bust a stale toc.json on a data-only release. It does fold
+        /// AssetVersion in, though, so a change to the client that reads these files
+        /// can't be paired with data written for the old contract. Computed once per
+        /// run by SdkDocGenerator from the generation's inputs, not a timestamp (see
+        /// SdkDocGenerator.ComputeDataVersion for the full input list and the one gap
+        /// it can't cover). Null disables versioning.
+        /// </summary>
+        public string DataVersion { get; set; }
+
+        /// <summary>
         /// The root folder containing SDK code samples
         /// </summary>
         public string CodeSamplesRootFolder { get; set; }

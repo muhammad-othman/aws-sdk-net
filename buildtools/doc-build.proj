@@ -83,10 +83,17 @@
     <Target Name="build-docgenerator">
         <Message Text="Restore nuget references for ..\docgenerator\AWSSDKDocGenerator.sln"/>
         <Exec Command="..\sdk\.nuget\NuGet.exe restore ..\docgenerator\AWSSDKDocGenerator.sln" />
-    
+
         <Message Text="Building documentation generator"/>
         <MSBuild Projects="..\docgenerator\AWSSDKDocGenerator.sln"
             Targets="Clean;Build"
             Properties="Configuration=Release" />
-    </Target> 
+
+        <!-- The unit tests pin the generator's security sanitization and the
+             toc.json / search-index.json contracts consumed by the static site's
+             client runtime. Nothing else in the repo executes them, so run them
+             here: a doc build with a broken generator must fail loudly, not ship. -->
+        <Message Text="Running documentation generator unit tests"/>
+        <Exec Command="dotnet test ..\docgenerator\SDKDocGenerator.UnitTests --configuration Release" />
+    </Target>
 </Project>

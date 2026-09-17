@@ -38,8 +38,13 @@ namespace SDKDocGenerator
 
         private static readonly Dictionary<string, string> NdocToHtmlElementMapping = new Dictionary<string, string>(StringComparer.Ordinal)
         {
-            { "summary", "p" },
-            { "para", "p" },
+            // summary/para are block containers (rendered as <div>, not <p>) because
+            // their content may include block-level <note>/<important> noteblocks —
+            // a <div> inside a <p> is invalid HTML and browsers auto-close the <p>,
+            // leaving stray empty paragraphs and spurious vertical gaps. The
+            // "doc-para" class restores paragraph-like spacing (see aws-docs.css).
+            { "summary", "div" },
+            { "para", "div" },
             { "see", "a" },
             { "paramref", "code" },
             { "important", "div" },
@@ -51,9 +56,135 @@ namespace SDKDocGenerator
 
         private static readonly Dictionary<string, string> NdocToHtmlClassMapping = new Dictionary<string, string>(StringComparer.Ordinal)
         {
+            { "summary", "doc-para" },
+            { "para", "doc-para" },
             { "important", "noteblock noteblock-warning" },
             { "note", "noteblock" }
         };
+
+        // HTML void elements — the only elements that may legally be emitted without a
+        // separate end tag. Everything else must get a full end tag (<div></div>), never
+        // the XML self-closing form (<div/>), which an HTML parser reads as an unclosed
+        // start tag that swallows the following siblings. None of the mapping targets
+        // (div/a/code/li/span/ul/ol) are void, so the emitted element is void iff its
+        // original NDoc local name is one of these (they pass through unmapped).
+        private static readonly HashSet<string> VoidHtmlElements = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "area", "base", "br", "col", "embed", "hr", "img", "input",
+            "link", "meta", "param", "source", "track", "wbr"
+        };
+
+        // Elements that would execute or reshape the page if they flowed from a doc
+        // comment into the generated HTML (the doc XML permits arbitrary element
+        // names). They are demoted to <span>, so their text stays visible but inert.
+        private static readonly HashSet<string> DisallowedDocElements = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "script", "style", "iframe", "object", "embed", "form",
+            "base", "link", "meta", "template", "svg", "math"
+        };
+
+        // Attributes that must never be copied from a doc comment into the page:
+        // inline event handlers and htmx attributes turn plain markup into script
+        // gadgets, and srcdoc/formaction smuggle whole documents/submissions.
+        // id would DOM-clobber the getElementById wiring in app.js, data-* are the
+        // client runtime's behavior hooks, and style/tabindex/autofocus reshape the
+        // page. rel/target/ping never flow through either: the generator writes its
+        // own target/rel on absolute links (an author copy could suppress or invert
+        // the noopener hardening, and a duplicate write aborts generation). class is
+        // handled separately in the copy loop (generator pre-pass classes survive,
+        // author classes don't).
+        private static bool IsSafeDocAttribute(string name)
+        {
+            return !(name.StartsWith("on", StringComparison.OrdinalIgnoreCase)
+                     || name.StartsWith("hx-", StringComparison.OrdinalIgnoreCase)
+                     || name.StartsWith("data-", StringComparison.OrdinalIgnoreCase)
+                     // form / formaction / formmethod / formtarget / formenctype /
+                     // formnovalidate: submission-override gadgets in one sweep.
+                     || name.StartsWith("form", StringComparison.OrdinalIgnoreCase)
+                     || name.Equals("srcdoc", StringComparison.OrdinalIgnoreCase)
+                     || name.Equals("id", StringComparison.OrdinalIgnoreCase)
+                     || name.Equals("style", StringComparison.OrdinalIgnoreCase)
+                     || name.Equals("tabindex", StringComparison.OrdinalIgnoreCase)
+                     || name.Equals("autofocus", StringComparison.OrdinalIgnoreCase)
+                     || name.Equals("accesskey", StringComparison.OrdinalIgnoreCase)
+                     || name.Equals("contenteditable", StringComparison.OrdinalIgnoreCase)
+                     || name.Equals("draggable", StringComparison.OrdinalIgnoreCase)
+                     || name.Equals("slot", StringComparison.OrdinalIgnoreCase)
+                     || name.Equals("is", StringComparison.OrdinalIgnoreCase)
+                     || name.Equals("rel", StringComparison.OrdinalIgnoreCase)
+                     || name.Equals("target", StringComparison.OrdinalIgnoreCase)
+                     || name.Equals("ping", StringComparison.OrdinalIgnoreCase));
+        }
+
+        // The only class values that may survive DocBlobToHTML: classes the
+        // generator's own pre-pass stamps onto elements it inserts into the doc
+        // XML (PreprocessCodeBlocksToPreTags), which the client runtime needs
+        // (highlight.js keys on language-csharp). Author-written classes are
+        // dropped — they reach the shipped stylesheet's behavioral selectors
+        // (class="search-modal" is a full-viewport fixed overlay), the same
+        // page-reshaping power the style ban removes.
+        private static readonly HashSet<string> GeneratorDocClasses = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "language-csharp",
+            "csharp-code-sample-title"
+        };
+
+        // Reduces a doc-comment URL to the form a browser's URL parser will act
+        // on: whitespace/control characters are ignored for scheme detection
+        // ("jav\tascript:" executes) and backslashes are normalized to slashes
+        // ("https:\\host" resolves like "https://host").
+        private static string NormalizeDocUrlProbe(string url)
+        {
+            return new string(url.Where(c => !char.IsWhiteSpace(c) && !char.IsControl(c)).ToArray())
+                .Replace('\\', '/');
+        }
+
+        // Extracts the scheme from a normalized probe, or null when the URL is
+        // relative (no colon, or the ':' sits inside the path/query/fragment).
+        private static string GetDocUrlScheme(string probe)
+        {
+            var colon = probe.IndexOf(':');
+            if (colon < 0)
+                return null;
+            var delimiter = probe.IndexOfAny(new[] { '/', '?', '#' });
+            if (delimiter >= 0 && delimiter < colon)
+                return null; // the ':' sits inside the path/query — still relative
+            return probe.Substring(0, colon);
+        }
+
+        // URL attribute values from doc comments may only be relative, fragment,
+        // http(s) or mailto — never javascript:/data:/vbscript: and friends. A
+        // scheme-relative "//host" (which resolves to an arbitrary absolute
+        // origin) is rejected in all its spellings ("\\host", "/\host").
+        internal static bool IsSafeDocUrl(string url)
+        {
+            if (string.IsNullOrEmpty(url))
+                return false;
+            var probe = NormalizeDocUrlProbe(url);
+            if (probe.StartsWith("//", StringComparison.Ordinal))
+                return false;
+            var scheme = GetDocUrlScheme(probe);
+            if (scheme == null)
+                return true;
+            return scheme.Equals("http", StringComparison.OrdinalIgnoreCase)
+                || scheme.Equals("https", StringComparison.OrdinalIgnoreCase)
+                || scheme.Equals("mailto", StringComparison.OrdinalIgnoreCase);
+        }
+
+        // True when a browser will resolve the URL to an absolute http(s) origin.
+        // This must judge the SAME normalized form IsSafeDocUrl accepts on —
+        // "https:\\host", "http:host" and a leading-space URL all resolve
+        // cross-origin, so testing the raw text for a literal "http://" prefix
+        // would let them through the filter yet skip the target/rel hardening.
+        internal static bool IsAbsoluteHttpDocUrl(string url)
+        {
+            if (string.IsNullOrEmpty(url))
+                return false;
+            var scheme = GetDocUrlScheme(NormalizeDocUrlProbe(url));
+            return scheme != null
+                && (scheme.Equals("http", StringComparison.OrdinalIgnoreCase)
+                    || scheme.Equals("https", StringComparison.OrdinalIgnoreCase));
+        }
 
         #region manage ndoc instances
         // The reason we cache the doc data on the side instead of directly referencing doc instances from
@@ -664,15 +795,23 @@ namespace SDKDocGenerator
 
         private static string SeeAlsoElementToHTML(XElement rootNode, AbstractTypeProvider typeProvider, FrameworkVersion version)
         {
-            var reader = rootNode.CreateReader();
-            reader.MoveToContent();
-            var innerXml = reader.ReadInnerXml();
+            // The link label is doc-comment text: encode it (raw inner XML here would
+            // carry element/attribute gadgets straight past the DocBlobToHTML
+            // sanitization, which this path bypasses).
+            var label = HttpUtility.HtmlEncode(rootNode.Value);
             string content = "";
 
             var href = rootNode.Attribute("href");
-            if (href != null)
+            if (href != null && IsSafeDocUrl(href.Value))
             {
-                content += string.Format(@"<div><a href=""{0}"" target=""_parent"" rel=""noopener noreferrer"">{1}</a></div>", href.Value, innerXml);
+                // Attribute-encode the doc-supplied href so a quote can't break out of
+                // the attribute value; disallowed schemes drop the link entirely.
+                content += string.Format(@"<div><a href=""{0}"" target=""_parent"" rel=""noopener noreferrer"">{1}</a></div>",
+                    HttpUtility.HtmlAttributeEncode(href.Value), label);
+            }
+            else if (href != null)
+            {
+                content += string.Format("<div>{0}</div>", label);
             }
 
             var cref = rootNode.Attribute(crefAttributeName);
@@ -700,131 +839,322 @@ namespace SDKDocGenerator
                                 // handle self-closing element, like <a />
                                 // this must be read before any other reading is done
                                 var selfClosingElement = reader.IsEmptyElement;
-                                var originalLocalName = reader.LocalName;
+                                // Judge (and emit) names the way an HTML parser will read
+                                // them: XML treats <A HREF> and <a href> as distinct names,
+                                // but HTML folds both to lowercase — routing on the raw
+                                // spelling would let a case variant (HREF="javascript:…")
+                                // slip past every check below while the browser still
+                                // honors it.
+                                var foldedLocalName = reader.LocalName.ToLowerInvariant();
+
+                                // Read the attributes once, names folded to lowercase. On a
+                                // fold collision (href + HREF) the first occurrence wins,
+                                // matching HTML parsing — and writing both would abort
+                                // generation (XmlWriter throws on duplicate names).
+                                var elementAttributes = ReadFoldedDocAttributes(reader);
 
                                 // element name substitution, if necessary
                                 string elementName;
-                                var isList = originalLocalName == "list";
+                                var isList = foldedLocalName == "list";
                                 if (isList)
                                 {
                                     // <list type="bullet"> → <ul>, <list type="number"> → <ol>
-                                    var listType = reader.GetAttribute("type");
+                                    var listType = GetDocAttribute(elementAttributes, "type");
                                     elementName = (listType == "number") ? "ol" : "ul";
                                 }
-                                else if (!NdocToHtmlElementMapping.TryGetValue(originalLocalName, out elementName))
-                                    elementName = originalLocalName;
+                                else if (!NdocToHtmlElementMapping.TryGetValue(foldedLocalName, out elementName))
+                                    elementName = foldedLocalName;
+
+                                // A <script>/<iframe>/… arriving in a doc comment must not
+                                // reach the page as an executable element.
+                                if (DisallowedDocElements.Contains(elementName))
+                                    elementName = "span";
+
+                                // Resolve the cref (if any) exactly once here; both the
+                                // <a>-vs-<span> decision below and the attribute loop further
+                                // down consume this single result instead of each calling
+                                // typeProvider.GetType (which could otherwise drift).
+                                // A malformed cref (not "X:Name") is a generation-time error
+                                // — a doc bug worth surfacing at build time — and the message
+                                // names the offending value so it can be found and fixed.
+                                // Skip for <list> (its attributes aren't copied below, and it
+                                // carries type=, never cref=) to keep the throw set identical
+                                // to the original attribute-loop behavior.
+                                var crefAttr = isList ? null : GetDocAttribute(elementAttributes, crefAttributeName);
+                                TypeWrapper crefTargetType = null;
+                                string crefTypeName = null;
+                                bool crefIsUnresolved = false;
+                                if (crefAttr != null)
+                                {
+                                    if (crefAttr.StartsWith("!:", StringComparison.Ordinal))
+                                    {
+                                        // "!:…" is the compiler's own could-not-resolve marker: it
+                                        // warns (CS1574/CS1584) but still writes the doc XML, and
+                                        // such crefs exist in shipping SDK sources. The payload is
+                                        // the author's ORIGINAL cref text verbatim and may itself
+                                        // contain colons ("!:Overload:Foo.Bar", "!:https://…"), so
+                                        // it must be taken whole, not shape-validated. A doc bug in
+                                        // one summary degrades like any unresolved cref (payload as
+                                        // encoded text, cref attribute dropped, nothing clickable —
+                                        // safe even for scheme-shaped payloads) rather than abort
+                                        // the whole ~100k-page generation run.
+                                        crefTypeName = crefAttr.Substring(2);
+                                        crefTargetType = null;
+                                        crefIsUnresolved = true;
+                                    }
+                                    else
+                                    {
+                                        // The prefix must be a single-letter doc-id kind (T/M/P/F/E/…).
+                                        // Anything longer would also ride into the page verbatim when a
+                                        // resolved cref is renamed to href — cref="javascript:Some.Type"
+                                        // must be a build error, not a link scheme.
+                                        var crefParts = crefAttr.Split(':');
+                                        if (crefParts.Length != 2 || crefParts[0].Length != 1 || !char.IsLetter(crefParts[0][0]))
+                                            throw new InvalidOperationException(string.Format(
+                                                "Malformed cref \"{0}\" on <{1}> in a documentation comment: expected the compiler's \"X:Name\" form (e.g. \"T:Amazon.S3.AmazonS3Client\").",
+                                                crefAttr, foldedLocalName));
+                                        crefTypeName = crefParts[1];
+                                        crefTargetType = typeProvider.GetType(crefTypeName);
+                                        crefIsUnresolved = crefTargetType == null;
+                                    }
+                                }
+
+                                // Anchors that would have no href look clickable but go
+                                // nowhere. Render them as a plain <span> instead. This covers
+                                // both <see cref="..."> whose target isn't in the generated doc
+                                // set, and author-written <a> tags in the SDK XML that simply
+                                // omit href.
+                                if (elementName == "a")
+                                {
+                                    if (crefAttr != null)
+                                    {
+                                        if (crefIsUnresolved)
+                                            elementName = "span";
+                                        else if (selfClosingElement)
+                                            // A self-closing resolved cref's content becomes a
+                                            // generator-built reference anchor (CreateReferenceHtml)
+                                            // — wrap it in a <span> rather than nesting an anchor
+                                            // inside an anchor (invalid HTML that browsers
+                                            // re-parent unpredictably).
+                                            elementName = "span";
+                                    }
+                                    else
+                                    {
+                                        // An href with a disallowed scheme (javascript: etc.) is
+                                        // treated as absent: the attribute loop below drops it,
+                                        // and the anchor demotes to <span> here.
+                                        var hrefValue = GetDocAttribute(elementAttributes, hrefAttributeName);
+                                        if ((string.IsNullOrEmpty(hrefValue) || !IsSafeDocUrl(hrefValue))
+                                            && string.IsNullOrEmpty(GetDocAttribute(elementAttributes, nameAttributeName)))
+                                        {
+                                            // <a> with no (usable) href and no name — not a real
+                                            // link and not a bookmark target, so render as <span>.
+                                            // A bare <a name="foo"> in-page bookmark anchor is kept
+                                            // as <a> (name only creates a fragment target on <a>).
+                                            elementName = "span";
+                                        }
+                                    }
+                                }
 
                                 // some elements can't be empty, use this variable for that
                                 string emptyElementContents = null;
+                                // true only when the contents are generator-built HTML (a
+                                // resolved cross-reference); everything else is doc-comment
+                                // text and gets entity-encoded at the write below.
+                                var emptyElementContentsAreHtml = false;
 
                                 // start element
                                 writer.WriteStartElement(elementName);
 
                                 // Add CSS class if the original element has a class mapping
                                 string cssClass;
-                                if (NdocToHtmlClassMapping.TryGetValue(originalLocalName, out cssClass))
+                                if (NdocToHtmlClassMapping.TryGetValue(foldedLocalName, out cssClass))
                                 {
                                     writer.WriteAttributeString("class", cssClass);
                                 }
 
                                 // copy over attributes (skip for list elements — type attribute already consumed)
-                                if (reader.HasAttributes && !isList)
+                                if (elementAttributes != null && !isList)
                                 {
                                     var isAbsoluteLink = false;
-                                    var hasTarget = false;
+                                    // Names actually written on this element, so a transformed
+                                    // name can't collide with a literal one (cref renames to
+                                    // href — an author href beside it would otherwise be a
+                                    // duplicate write, which aborts generation). First wins,
+                                    // matching HTML parsing. Seeded with "class" when the
+                                    // generator wrote its mapping class above.
+                                    var writtenAttributeNames = new HashSet<string>(StringComparer.Ordinal);
+                                    if (cssClass != null)
+                                        writtenAttributeNames.Add("class");
 
-                                    for (int i = 0; i < reader.AttributeCount; i++)
+                                    foreach (var docAttribute in elementAttributes)
                                     {
-                                        reader.MoveToAttribute(i);
-                                        var attributeName = reader.Name;
-                                        var attributeValue = reader.Value;
+                                        var attributeName = docAttribute.Key;
+                                        var attributeValue = docAttribute.Value;
 
+                                        // Event handlers / htmx attributes / identity and
+                                        // behavior hooks never pass through, and src must
+                                        // carry a safe URL (see the helpers above).
+                                        if (!IsSafeDocAttribute(attributeName))
+                                            continue;
+                                        if (string.Equals(attributeName, "src", StringComparison.OrdinalIgnoreCase)
+                                            && !IsSafeDocUrl(attributeValue))
+                                            continue;
+                                        // class survives only when it is one the generator's own
+                                        // pre-pass stamped into the doc XML (highlight.js keys on
+                                        // language-csharp); author classes reach the stylesheet's
+                                        // behavioral selectors and are dropped.
+                                        if (string.Equals(attributeName, "class", StringComparison.Ordinal)
+                                            && !GeneratorDocClasses.Contains(attributeValue))
+                                            continue;
+
+                                        // Attribute names were folded to lowercase up front, so
+                                        // Ordinal compares here also catch HREF/Cref/… spellings.
                                         var isCref = string.Equals(attributeName, crefAttributeName, StringComparison.Ordinal);
                                         var isHref = string.Equals(attributeName, hrefAttributeName, StringComparison.Ordinal);
                                         var isName = string.Equals(attributeName, nameAttributeName, StringComparison.Ordinal);
-                                        var isTarget = string.Equals(attributeName, targetAttributeName, StringComparison.Ordinal);
 
                                         var writeAttribute = true;
 
                                         if (isCref)
                                         {
-                                            // replace cref with href
-                                            attributeName = hrefAttributeName;
-
-                                            // extract type name from cref value for emptyElementContents
-                                            var crefParts = attributeValue.Split(':');
-                                            if (crefParts.Length != 2)
-                                                throw new InvalidOperationException();
-                                            var typeName = crefParts[1];
-                                            var targetType = typeProvider.GetType(typeName);
-                                            if (targetType == null)
+                                            // Reuse the single resolution done at element-open.
+                                            if (crefIsUnresolved)
                                             {
-                                                emptyElementContents = typeName;
-                                                //If the type cannot be found do not render out the href attribute.
-                                                //This will make it so things such as properties which we do not have
-                                                //specific doc pages for do not render as a broken link but we can still
-                                                //use the crefs in the code correctly.
+                                                // Unresolved: the element was switched to <span> above.
+                                                // Emit the bare type name as text and drop the cref
+                                                // attribute entirely so nothing looks clickable.
+                                                emptyElementContents = crefTypeName;
                                                 writeAttribute = false;
                                             }
                                             else
-                                                emptyElementContents = targetType.CreateReferenceHtml(fullTypeName: true);
+                                            {
+                                                emptyElementContents = crefTargetType.CreateReferenceHtml(fullTypeName: true);
+                                                emptyElementContentsAreHtml = true;
+                                                if (selfClosingElement)
+                                                {
+                                                    // The <span> wrapper (see element-open) carries
+                                                    // the generator-built anchor as content; a cref
+                                                    // echoed as href would be a dead "T:…" link.
+                                                    writeAttribute = false;
+                                                }
+                                                else
+                                                {
+                                                    // Resolved: replace cref with href on the <a>.
+                                                    attributeName = hrefAttributeName;
+                                                }
+                                            }
                                         }
                                         else if (isHref)
                                         {
+                                            // Disallowed scheme: drop the attribute entirely (the
+                                            // element was already demoted to <span> above).
+                                            if (!IsSafeDocUrl(attributeValue))
+                                                continue;
+
                                             // extract href value for emptyElementContents
                                             emptyElementContents = attributeValue;
+                                            emptyElementContentsAreHtml = false; // doc-supplied text, even after a resolved cref
 
-                                            if (attributeValue.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
-                                                attributeValue.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+                                            if (IsAbsoluteHttpDocUrl(attributeValue))
                                             {
                                                 isAbsoluteLink = true;
                                             }
                                         }
                                         else if (isName)
                                         {
+                                            // name only creates a fragment target on an anchor and
+                                            // is inert on demoted spans, but on document named
+                                            // objects (notably <img>, the only one not demoted) it
+                                            // becomes an own property of `document` that shadows
+                                            // prototype members — <img name="getElementById">
+                                            // would break every document.getElementById call in
+                                            // app.js. Drop it there (attribute and text echo).
+                                            if (foldedLocalName == "img")
+                                                continue;
+
                                             emptyElementContents = attributeValue;
-                                        }
-                                        else if (isTarget)
-                                        {
-                                            hasTarget = true;
+                                            emptyElementContentsAreHtml = false; // doc-supplied text, even after a resolved cref
+
+                                            if (elementName != "a")
+                                                writeAttribute = false;
                                         }
 
-                                        if (writeAttribute)
+                                        if (writeAttribute && writtenAttributeNames.Add(attributeName))
                                         {
                                             writer.WriteAttributeString(attributeName, attributeValue);
                                         }
                                     }
 
-                                    if (elementName == "a" && isAbsoluteLink && !hasTarget)
+                                    if (elementName == "a" && isAbsoluteLink)
                                     {
-                                        //Add a target=\"_blank\" to allow the absolute link to break out
-                                        //of the frame.
+                                        // target="_blank" opens the external link in its own tab;
+                                        // rel=noopener severs the opener reference so the external
+                                        // (doc-comment-supplied) page can't script this window.
+                                        // These are written unconditionally: author target/rel/ping
+                                        // were dropped by IsSafeDocAttribute above, so the
+                                        // generator's values are the only ones (an author copy
+                                        // could suppress or invert this hardening, and a duplicate
+                                        // rel write would abort generation).
                                         writer.WriteAttributeString(targetAttributeName, "_blank");
+                                        writer.WriteAttributeString("rel", "noopener noreferrer");
                                     }
                                 }
 
                                 // if this is a self-closing element, close it
                                 if (selfClosingElement)
                                 {
-                                    // write empty element contents, if any
+                                    // write empty element contents, if any — raw only for
+                                    // generator-built cross-reference HTML; doc-comment-supplied
+                                    // values (unresolved cref names, href/name echoes) are text.
                                     if (!string.IsNullOrEmpty(emptyElementContents))
                                     {
-                                        writer.WriteRaw(emptyElementContents);
+                                        if (emptyElementContentsAreHtml)
+                                            writer.WriteRaw(emptyElementContents);
+                                        else
+                                            writer.WriteString(emptyElementContents);
                                     }
 
-                                    // close element now
-                                    writer.WriteEndElement();
+                                    // Close it. For non-void elements force a full end tag
+                                    // (<div></div>) — the XML self-closing form (<div/>) is read
+                                    // by an HTML parser as an unclosed start tag that swallows the
+                                    // following siblings. Void elements (br/wbr/img/…) keep the
+                                    // self-closing form, which is valid for them.
+                                    WriteElementEnd(writer, foldedLocalName);
                                 }
 
                                 break;
                             case XmlNodeType.EndElement:
-                                writer.WriteEndElement();
+                                // Same rule as the self-closing branch: an empty <para></para>
+                                // (no children) would otherwise be serialized as <div/> by
+                                // WriteEndElement. Force a full end tag for non-void elements.
+                                WriteElementEnd(writer, reader.LocalName);
                                 break;
                             case XmlNodeType.Text:
-                                writer.WriteRaw(reader.Value);
+                            // CDATA is authorable in /// comments; its content is doc text
+                            // and gets the same exactly-once encoding as any text node.
+                            case XmlNodeType.CDATA:
+                                // Entity-encode: the XmlReader has already decoded entities, so
+                                // a raw write would turn "&lt;script&gt;" arriving in a doc
+                                // comment (service-model docs are authored outside this repo)
+                                // into live markup. Code samples reach here as plain text too
+                                // (see PreprocessCodeBlocksToPreTags) and are encoded exactly
+                                // once, here.
+                                writer.WriteString(reader.Value);
+                                break;
+                            case XmlNodeType.Whitespace:
+                            case XmlNodeType.SignificantWhitespace:
+                                writer.WriteWhitespace(reader.Value);
+                                break;
+                            case XmlNodeType.Comment:
+                            case XmlNodeType.ProcessingInstruction:
+                                // Legal in doc XML, meaningless on the page — and letting
+                                // them throw would abort the whole generation run.
                                 break;
                             default:
-                                throw new InvalidOperationException();
+                                throw new InvalidOperationException(string.Format(
+                                    "Unexpected XML node type \"{0}\" in documentation comment.",
+                                    reader.NodeType));
                         }
                     }
                 }
@@ -833,10 +1163,75 @@ namespace SDKDocGenerator
             }
         }
 
+        // Reads an element's attributes into document order with names folded to
+        // lowercase (the way an HTML parser reads them); on a fold collision
+        // (href + HREF) the first occurrence wins. Returns null when the element
+        // has no attributes. Leaves the reader positioned back on the element.
+        private static List<KeyValuePair<string, string>> ReadFoldedDocAttributes(XmlReader reader)
+        {
+            if (!reader.HasAttributes)
+                return null;
+
+            var attributes = new List<KeyValuePair<string, string>>(reader.AttributeCount);
+            var seenNames = new HashSet<string>(StringComparer.Ordinal);
+            for (int i = 0; i < reader.AttributeCount; i++)
+            {
+                reader.MoveToAttribute(i);
+                var foldedName = reader.Name.ToLowerInvariant();
+                // Namespace machinery and prefixed names (xmlns, xmlns:p, xml:lang,
+                // p:href) never flow to the page: they are XML plumbing, not HTML
+                // attributes — and passing one to WriteAttributeString would abort
+                // the whole generation run (':' is invalid in a local name, and a
+                // bare xmlns write throws a prefix-redefinition error).
+                if (foldedName == "xmlns" || foldedName.IndexOf(':') >= 0)
+                    continue;
+                if (seenNames.Add(foldedName))
+                    attributes.Add(new KeyValuePair<string, string>(foldedName, reader.Value));
+            }
+            reader.MoveToElement();
+
+            return attributes;
+        }
+
+        // Case-insensitive-by-construction lookup over ReadFoldedDocAttributes
+        // output (names are already folded; `name` must be passed lowercase).
+        private static string GetDocAttribute(List<KeyValuePair<string, string>> attributes, string name)
+        {
+            if (attributes == null)
+                return null;
+
+            foreach (var attribute in attributes)
+            {
+                if (string.Equals(attribute.Key, name, StringComparison.Ordinal))
+                    return attribute.Value;
+            }
+
+            return null;
+        }
+
+        // Closes the current element, choosing between a full end tag and the XML
+        // self-closing form based on whether the (original) element maps to a void HTML
+        // element. Non-void elements MUST get a full end tag so browsers don't mis-parse
+        // an empty <div/>/<span/>/<li/> as an unclosed start tag. `originalLocalName` is
+        // the NDoc source name; none of our remap targets are void, so its void-ness
+        // equals the emitted element's void-ness.
+        private static void WriteElementEnd(XmlWriter writer, string originalLocalName)
+        {
+            // Disallowed elements were demoted to <span> at the start tag, so even a
+            // void original name (embed/link/meta/base) needs a full </span> end tag.
+            if (VoidHtmlElements.Contains(originalLocalName) && !DisallowedDocElements.Contains(originalLocalName))
+                writer.WriteEndElement();       // e.g. <br/>, <wbr/> — valid self-closing
+            else
+                writer.WriteFullEndElement();   // e.g. <div></div>, <span></span>
+        }
+
         public static void PreprocessCodeBlocksToPreTags(GeneratorOptions options, XDocument doc)
         {
             var nodesToRemove = new List<XElement>();
-            var codeNodes = doc.XPathSelectElements("//code");
+            // Materialize the matches up front. We insert new <code class="language-csharp">
+            // elements below, which also match "//code"; iterating the lazy XPath result
+            // directly would re-find those and wrap them endlessly (OOM).
+            var codeNodes = doc.XPathSelectElements("//code").ToList();
             foreach (var codeNode in codeNodes)
             {
                 string processedCodeSample = null;
@@ -868,20 +1263,25 @@ namespace SDKDocGenerator
                     startPos = content.IndexOf('\n', startPos);
                     var endPos = content.IndexOf("#endregion", startPos);
 
-                    var sampleCode = content.Substring(startPos, endPos - startPos);
-                    processedCodeSample = HttpUtility.HtmlEncode(sampleCode);
+                    // Stored as plain text: DocBlobToHTML entity-encodes text nodes at
+                    // emit, so pre-encoding here would double-encode the sample.
+                    processedCodeSample = content.Substring(startPos, endPos - startPos);
                 }
                 else
                 {
-                    processedCodeSample = HttpUtility.HtmlEncode(codeNode.Value);
+                    processedCodeSample = codeNode.Value;
                 }
 
                 if (processedCodeSample != null && processedCodeSample.IndexOf('\n') > -1)
                 {
 
                     processedCodeSample = LeftJustifyCodeBlocks(processedCodeSample);
-                    var preElement = new XElement("pre", processedCodeSample);
-                    preElement.SetAttributeValue("class", "brush: csharp");
+                    // Emit <pre><code class="language-csharp"> for highlight.js. The
+                    // sample is stored as a plain text node; DocBlobToHTML encodes it
+                    // exactly once when the page is written.
+                    var codeElement = new XElement("code", processedCodeSample);
+                    codeElement.SetAttributeValue("class", "language-csharp");
+                    var preElement = new XElement("pre", codeElement);
 
                     codeNode.AddAfterSelf(preElement);
                     nodesToRemove.Add(codeNode);
