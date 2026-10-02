@@ -1719,8 +1719,10 @@
   // document, so an un-synced head attributes every later page view to the
   // first page. The values exist only in the response body, which only
   // htmx:beforeSwap sees — capture there, apply on the matching afterSwap.
-  // (Back/Forward history restores are left alone: a stale canonical during a
-  // restore is harmless, and tracking fires only on real navigations.)
+  // (Back/Forward history restores never fire beforeSwap, so the head goes
+  // stale there. A stale canonical is harmless, but a page-view beacon built
+  // from that head would be misattributed — so restores are not tracked at
+  // all; see the htmx:historyRestore listener below.)
   var HEAD_META_TAGS = [
     ["link", "rel", "canonical", "href"],
     ["meta", "name", "description", "content"],
@@ -1802,6 +1804,14 @@
     // Deferred a task: htmx sets the URL and <title> as part of handling the
     // navigation, and the platform reads both off the live document.
     setTimeout(trackVirtualPageView, 0);
+  });
+  // History restores (Back/Forward) fire htmx:afterSwap too, but never
+  // htmx:beforeSwap — the head still describes the pre-Back page, so a beacon
+  // would attribute the restored page's view to the wrong page. Mark the
+  // restored URL as already tracked; htmx fires this event synchronously,
+  // before the deferred trackVirtualPageView above can run.
+  document.addEventListener("htmx:historyRestore", function () {
+    _lastTrackedHref = window.location.href;
   });
 
   // Scroll handling for in-place navigation. htmx's own scroll handling targets

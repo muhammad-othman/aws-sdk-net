@@ -110,11 +110,16 @@ function appendChunk(chunk) {
       throw new Error("bad index chunk");
     }
     var name = row[2];
+    // Derive BEFORE pushing: a non-string name throws here, while the arrays
+    // are still untouched — a throw between pushes would skew the parallel
+    // arrays for every row appended after it.
+    var lname = name.toLowerCase();
+    var acr = acronymOf(name);
     TYPEIDX.push(ti);
     KINDS.push(row[1]);
     NAMES.push(name);
-    LNAMES.push(name.toLowerCase());
-    ACRS.push(acronymOf(name));
+    LNAMES.push(lname);
+    ACRS.push(acr);
     FILES.push(row[3]);         // undefined for the (common) 3-element rows
     SIGS.push(row[4]);
   }
