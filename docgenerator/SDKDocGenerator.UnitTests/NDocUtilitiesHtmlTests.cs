@@ -519,6 +519,27 @@ namespace SDKDocGenerator.UnitTests
         }
 
         [Fact]
+        public void LabeledResolvedCref_LinksToTargetPageNotDocId()
+        {
+            // A labeled <see cref="T:X">label</see> used to echo the raw doc-id as
+            // the link target (href="T:System.String") — browsers parse "T:" as a
+            // URI scheme, so every such link was dead. The resolved target's real
+            // page URL (TypeWrapper.GetHelpPageUrl) must be emitted instead.
+            var xml = "<doc><summary><see cref=\"T:System.String\">the string type</see></summary></doc>";
+            var element = XElement.Parse(xml);
+            var result = NDocUtilities.TransformDocumentationToHTML(
+                element, "summary", new ResolveEverythingProvider(), FrameworkVersion.DotNet472);
+
+            Assert.DoesNotContain("href=\"T:", result);
+            Assert.Contains("the string type", result);
+            // System.String resolves to its Microsoft docs page; absolute http(s)
+            // links get the same target/rel hardening as author-written ones.
+            Assert.Contains("href=\"https://msdn.microsoft.com/en-us/library/system.string.aspx\"", result);
+            Assert.Contains("target=\"_blank\"", result);
+            Assert.Contains("rel=\"noopener noreferrer\"", result);
+        }
+
+        [Fact]
         public void BackslashAbsoluteHref_GetsTargetAndRelHardening()
         {
             // Browsers normalize "https:\\host" to "https://host" — a cross-origin

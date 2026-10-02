@@ -850,6 +850,7 @@ namespace SDKDocGenerator
                                 var crefAttr = isList ? null : GetDocAttribute(elementAttributes, crefAttributeName);
                                 TypeWrapper crefTargetType = null;
                                 string crefTypeName = null;
+                                string crefHref = null;
                                 bool crefIsUnresolved = false;
                                 if (crefAttr != null)
                                 {
@@ -878,6 +879,8 @@ namespace SDKDocGenerator
                                         crefTypeName = crefParts[1];
                                         crefTargetType = typeProvider.GetType(crefTypeName);
                                         crefIsUnresolved = crefTargetType == null;
+                                        if (!crefIsUnresolved)
+                                            crefHref = crefTargetType.GetHelpPageUrl();
                                     }
                                 }
 
@@ -898,6 +901,11 @@ namespace SDKDocGenerator
                                             // — wrap it in a <span> rather than nesting an anchor
                                             // inside an anchor (invalid HTML that browsers
                                             // re-parent unpredictably).
+                                            elementName = "span";
+                                        else if (crefHref == null)
+                                            // Resolved, but to a type with no page URL: keep the
+                                            // label visible, render nothing clickable (an <a>
+                                            // without href still looks like a link).
                                             elementName = "span";
                                     }
                                     else
@@ -992,17 +1000,25 @@ namespace SDKDocGenerator
                                             {
                                                 emptyElementContents = crefTargetType.CreateReferenceHtml(fullTypeName: true);
                                                 emptyElementContentsAreHtml = true;
-                                                if (selfClosingElement)
+                                                if (selfClosingElement || crefHref == null)
                                                 {
-                                                    // The <span> wrapper (see element-open) carries
-                                                    // the generator-built anchor as content; a cref
-                                                    // echoed as href would be a dead "T:…" link.
+                                                    // Self-closing: the <span> wrapper (see element-
+                                                    // open) carries the generator-built anchor as
+                                                    // content. No page URL: the element was demoted
+                                                    // to <span>. Either way, a cref echoed as href
+                                                    // would be a dead "T:…" link.
                                                     writeAttribute = false;
                                                 }
                                                 else
                                                 {
-                                                    // Resolved: replace cref with href on the <a>.
+                                                    // Labeled resolved cref: rewrite to the target's
+                                                    // real page URL. The raw doc-id value
+                                                    // ("T:Amazon.S3.AmazonS3Client") parses as a URI
+                                                    // scheme, so echoing it made every such link dead.
                                                     attributeName = hrefAttributeName;
+                                                    attributeValue = crefHref;
+                                                    if (IsAbsoluteHttpDocUrl(crefHref))
+                                                        isAbsoluteLink = true;
                                                 }
                                             }
                                         }

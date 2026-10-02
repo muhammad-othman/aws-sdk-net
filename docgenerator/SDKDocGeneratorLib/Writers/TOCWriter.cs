@@ -51,7 +51,11 @@ namespace SDKDocGenerator.Writers
             public string Sig;      // "(paramTypes)" — ONLY for overloaded methods, else null
         }
 
-        private readonly List<MemberEntry> _searchEntries = new List<MemberEntry>();
+        // Keyed by namespace, like _namespaceTocs, so a namespace processed twice
+        // replaces its entries in BOTH artifacts — toc.json and the search index
+        // must always describe the same type set.
+        private readonly Dictionary<string, List<MemberEntry>> _searchEntriesByNamespace =
+            new Dictionary<string, List<MemberEntry>>();
 
         public TOCWriter(GeneratorOptions options)
             : base(options)
@@ -66,20 +70,11 @@ namespace SDKDocGenerator.Writers
         /// </summary>
         public void BuildNamespaceToc(string nameSpace, AssemblyWrapper sdkAssemblyWrapper)
         {
-            var nsToc = BuildNamespaceModel(nameSpace, sdkAssemblyWrapper);
-            if (_namespaceTocs.ContainsKey(nameSpace))
-            {
-                // Namespace already processed: replace its TOC (last write wins) and do NOT
-                // re-collect search entries. _searchEntries is a plain append-only list, so
-                // re-collecting would duplicate every member of this namespace in the index
-                // (whereas the TOC is keyed and de-duplicates). Guard both together.
-                _namespaceTocs[nameSpace] = nsToc;
-            }
-            else
-            {
-                _namespaceTocs.Add(nameSpace, nsToc);
-                CollectSearchEntries(nameSpace, sdkAssemblyWrapper);
-            }
+            // Both artifacts replace-on-rewrite (last write wins): a namespace rebuilt
+            // from a later pass must never leave toc.json and the search index
+            // describing different type sets.
+            _namespaceTocs[nameSpace] = BuildNamespaceModel(nameSpace, sdkAssemblyWrapper);
+            _searchEntriesByNamespace[nameSpace] = CollectSearchEntries(nameSpace, sdkAssemblyWrapper);
         }
 
         /// <summary>
@@ -90,8 +85,9 @@ namespace SDKDocGenerator.Writers
         /// properties, fields and enum members are rows on the type page, whose
         /// "#anchor" link the client derives from TypeFile + the member name.
         /// </summary>
-        void CollectSearchEntries(string nameSpace, AssemblyWrapper sdkAssemblyWrapper)
+        List<MemberEntry> CollectSearchEntries(string nameSpace, AssemblyWrapper sdkAssemblyWrapper)
         {
+            var entries = new List<MemberEntry>();
             foreach (var type in sdkAssemblyWrapper.GetTypesForNamespace(nameSpace))
             {
                 var folder = GenerationManifest.OutputSubFolderFromNamespace(type.Namespace);
@@ -106,7 +102,7 @@ namespace SDKDocGenerator.Writers
                 {
                     foreach (var enumName in type.GetEnumNames())
                     {
-                        AddSearchEntry(folder, enumName, KindEnumMember, typeName, typePageFile);
+                        AddSearchEntry(entries, folder, enumName, KindEnumMember, typeName, typePageFile);
                     }
                     continue;
                 }
@@ -124,14 +120,14 @@ namespace SDKDocGenerator.Writers
                 foreach (var info in declaredMethods)
                 {
                     var sig = overloadedNames.Contains(info.Name) ? FormatSignature(info) : null;
-                    AddSearchEntry(folder, info.Name, KindMethod, typeName, typePageFile,
+                    AddSearchEntry(entries, folder, info.Name, KindMethod, typeName, typePageFile,
                         FilenameGenerator.GenerateFilename(info), sig);
                 }
                 foreach (var info in type.GetEvents())
                 {
                     if (!IsDeclaredOn(info.DeclaringType, type))
                         continue;
-                    AddSearchEntry(folder, info.Name, KindEvent, typeName, typePageFile,
+                    AddSearchEntry(entries, folder, info.Name, KindEvent, typeName, typePageFile,
                         FilenameGenerator.GenerateFilename(info));
                 }
 
@@ -141,15 +137,16 @@ namespace SDKDocGenerator.Writers
                 {
                     if (!IsDeclaredOn(info.DeclaringType, type))
                         continue;
-                    AddSearchEntry(folder, info.Name, KindProperty, typeName, typePageFile);
+                    AddSearchEntry(entries, folder, info.Name, KindProperty, typeName, typePageFile);
                 }
                 foreach (var info in type.GetFields())
                 {
                     if (!IsDeclaredOn(info.DeclaringType, type))
                         continue;
-                    AddSearchEntry(folder, info.Name, KindField, typeName, typePageFile);
+                    AddSearchEntry(entries, folder, info.Name, KindField, typeName, typePageFile);
                 }
             }
+            return entries;
         }
 
         // A member is "declared" on the page's type when its declaring type matches;
@@ -159,10 +156,10 @@ namespace SDKDocGenerator.Writers
             return declaringType != null && string.Equals(declaringType.FullName, pageType.FullName);
         }
 
-        void AddSearchEntry(string folder, string name, int kind, string type, string typeFile,
+        static void AddSearchEntry(List<MemberEntry> entries, string folder, string name, int kind, string type, string typeFile,
             string ownFile = null, string sig = null)
         {
-            _searchEntries.Add(new MemberEntry
+            entries.Add(new MemberEntry
             {
                 Folder = folder,
                 Name = name,
@@ -295,7 +292,13 @@ namespace SDKDocGenerator.Writers
         /// </summary>
         void WriteSearchIndexJson()
         {
-            foreach (var artifact in SerializeSearchIndexFiles(Options.ContentSubFolderName, _searchEntries, SearchIndexChunkRowCount))
+            // Flattened in namespace order (matching toc.json) so the emitted chunks
+            // are deterministic regardless of generation order.
+            var searchEntries = _searchEntriesByNamespace
+                .OrderBy(kvp => kvp.Key, StringComparer.Ordinal)
+                .SelectMany(kvp => kvp.Value)
+                .ToList();
+            foreach (var artifact in SerializeSearchIndexFiles(Options.ContentSubFolderName, searchEntries, SearchIndexChunkRowCount))
             {
                 File.WriteAllText(Path.Combine(Options.OutputFolder, artifact.FileName), artifact.Json);
             }

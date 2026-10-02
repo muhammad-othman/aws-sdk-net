@@ -460,7 +460,9 @@ namespace SDKDocGenerator.Writers
             // app.js reads the version file/service from data-* attributes and fills in
             // #assemblyVersion on page load / htmx:afterSwap (replacing the old inline jQuery ajax call).
             var isCore = Artifacts.ServiceName.Equals("Core", StringComparison.OrdinalIgnoreCase);
-            var versionInfoFile = RootRelativePath + "/items/_sdk-versions.json";
+            // ContentSubFolderName, not a literal "items": SdkDocGenerator copies the
+            // version file into Options.ComputedContentFolder, wherever that is.
+            var versionInfoFile = RootRelativePath + "/" + Artifacts.Options.ContentSubFolderName + "/_sdk-versions.json";
 
             writer.WriteLine("<div id=\"namespaceblock\">");
                 writer.Write("<p>");

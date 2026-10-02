@@ -85,7 +85,11 @@
             // page's own filename (a suffix heuristic — duplicate type names exist
             // under many service folders — kept as fallback for tocid-less
             // bookmarks). Any failure → fallback.
-            fetch("./toc.json")
+            // Timestamp cache-buster: this static page can't know the release's
+            // data version (every other toc.json consumer appends ?v=<DataVersion>),
+            // and a CDN-cached copy from a previous release would misroute
+            // bookmarks. Rare path, so an always-miss fetch is fine.
+            fetch("./toc.json?r=" + Date.now())
                 .then(function (r) { return r.ok ? r.json() : null; })
                 .then(function (toc) {
                     if (!toc || !toc.namespaces) { go(fallback); return; }
