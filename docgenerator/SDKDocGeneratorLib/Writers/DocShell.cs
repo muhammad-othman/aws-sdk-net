@@ -40,19 +40,10 @@ namespace SDKDocGenerator.Writers
             /// </summary>
             public string ContentSubFolder { get; set; } = "items";
 
-            /// <summary>
-            /// Asset fingerprint (GeneratorOptions.AssetVersion); when set, CSS/JS
-            /// links get a ?v= query so CDNs can never serve stale assets with new
-            /// HTML. Null/empty emits bare URLs.
-            /// </summary>
+            /// <summary>Cache-busting ?v= for CSS/JS links (GeneratorOptions.AssetVersion); null/empty emits bare URLs.</summary>
             public string AssetVersion { get; set; }
 
-            /// <summary>
-            /// Data fingerprint (GeneratorOptions.DataVersion) for the runtime-fetched
-            /// data files (toc.json, search-index.json, _sdk-versions.json). Emitted as
-            /// body data-datav; the client runtime appends it as ?v= to those fetches
-            /// so a CDN can't pair new pages with stale data. Null/empty omits it.
-            /// </summary>
+            /// <summary>Cache-busting token for runtime data fetches, emitted as body data-datav (GeneratorOptions.DataVersion); null/empty omits it.</summary>
             public string DataVersion { get; set; }
         }
 
@@ -107,15 +98,11 @@ namespace SDKDocGenerator.Writers
             writer.WriteLine("<link rel=\"stylesheet\" type=\"text/css\" href=\"{0}/resources/aws-docs.css{1}\"/>", root, v);
             writer.WriteLine("<link rel=\"icon\" href=\"{0}/favicon.ico\"/>", root);
 
-            // Without JavaScript the hamburger can't open the off-canvas drawer, which
-            // would strand the sidebar's noscript TOC link off-screen at ≤1024px — the
-            // only no-JS navigation entry. Put the sidebar back into the document flow
-            // there so the link stays reachable; the filter input is JS-driven, so it
-            // is dead weight without scripting and is hidden at every width.
+            // No-JS: the hamburger can't open the drawer at ≤1024px, which would
+            // strand the sidebar's noscript TOC link (the only no-JS navigation
+            // entry) off-screen — put the sidebar back in flow there. margin-top
+            // clears the fixed topbar; the JS-driven filter input is hidden.
             writer.WriteLine("<noscript><style>");
-            // margin-top clears the fixed topbar: static flow starts at y=0, and the
-            // opaque 56px bar would otherwise sit exactly on top of the short
-            // sidebar block, hiding the TOC link it exists to expose.
             writer.WriteLine("@media (max-width: 1024px) { #sidebar { position: static; transform: none; visibility: visible; width: auto; height: auto; margin-top: var(--topbar-h); } }");
             writer.WriteLine("#sidebar .sidebar-filter { display: none; }");
             writer.WriteLine("</style></noscript>");
@@ -126,41 +113,20 @@ namespace SDKDocGenerator.Writers
             if (!string.IsNullOrEmpty(o.CanonicalUrl))
                 writer.WriteLine("<link rel=\"canonical\" href=\"{0}\"/>", Attr(o.CanonicalUrl));
 
-            // The docs.aws.amazon.com platform bootstrap (analytics, cookie consent /
-            // shortbread). Site-absolute on purpose: it only exists on the docs hosts
-            // and harmlessly 404s on local/preview servers. The old site loaded it on
-            // every page; keep that so platform metrics/compliance don't silently stop.
-            // It counts a page view per document LOAD, which under in-place navigation
-            // is once per session — app.js re-triggers it per swap
-            // (trackVirtualPageView) so the Adobe stream keeps counting pages.
+            // The docs.aws.amazon.com platform bootstrap (analytics, cookie consent).
+            // Site-absolute on purpose: it only exists on the docs hosts and
+            // harmlessly 404s on local/preview servers. app.js re-triggers its page
+            // view per swap (trackVirtualPageView).
             writer.WriteLine("<script src=\"/assets/js/awsdocs-boot.js\" defer></script>");
 
-            // htmx boosts same-origin link clicks into AJAX requests that swap only the
-            // #main region (see <body> hx-* attributes below), keeping the topbar/sidebar/
-            // search modal mounted because they live outside #main. Loaded deferred; app.js
-            // re-runs page init on htmx:afterSwap.
-            //
-            // Harden htmx before it loads: this site needs neither eval (hx-on*/js:
-            // expressions) nor execution of <script> tags arriving in swapped content,
-            // and requests must stay same-origin. Without this, any markup that reaches
-            // page content gains eval-capable gadgets the old jQuery site never had.
-            //
-            // attributesToSettle is emptied for correctness, not hardening. It defaults
-            // to ["class","style","width","height"], and settling does not merely copy
-            // those attributes onto same-id elements in the new content — it also
-            // REMOVES them from an element whose incoming twin lacks them. Every page
-            // here is a full document swapped through #main, so ids recur across pages
-            // and any inline style app.js set at runtime gets wiped ~20ms after the
-            // swap: #regionDisclaimer (BaseWriter emits it with no style attribute, so
-            // the display:block applyRegionDisclaimer sets on cn hosts is stripped back
-            // to the stylesheet's display:none) is the live case, and any future
-            // element.style write inside #main inherits the same trap.
-            // Nothing on this site needs settling: the pieces that carry runtime state
-            // (#tocList, the search modal, the topbar) live OUTSIDE #main and are never
-            // swapped, and the per-page work that must run after a swap is already
-            // hooked on htmx:afterSwap / htmx:afterSettle in app.js. Skipping it also
-            // drops a querySelectorAll("[id]") plus a CSS.escape + document lookup per
-            // id from every navigation.
+            // Harden htmx before it loads: no eval (hx-on*/js:), no <script> execution
+            // in swapped content, same-origin requests only — without this, markup
+            // reaching page content gains eval gadgets the old jQuery site never had.
+            // attributesToSettle is emptied for CORRECTNESS: settling also REMOVES
+            // settle-listed attributes (style among them) from elements whose same-id
+            // twin in the new content lacks them, wiping runtime styles app.js set
+            // (#regionDisclaimer's display:block was the live case). Nothing here
+            // needs settling — stateful chrome lives outside #main.
             writer.WriteLine("<meta name=\"htmx-config\" content='{\"allowEval\":false,\"allowScriptTags\":false,\"selfRequestsOnly\":true,\"attributesToSettle\":[]}'/>");
             writer.WriteLine("<script src=\"{0}/resources/htmx.min.js{1}\" defer></script>", root, v);
             // highlight.min.js is the highlight.js "common" build, which already
@@ -174,20 +140,15 @@ namespace SDKDocGenerator.Writers
 
             writer.WriteLine("</head>");
 
-            // hx-boost turns same-origin <a> clicks into AJAX GETs; we target/select only
-            // #main so the persistent chrome (topbar, sidebar, search modal — all outside
-            // #main) is never swapped. No scroll modifier: #main is not a scroll container
-            // (the window scrolls), so htmx's scroll handling would be a no-op here —
-            // app.js's htmx:afterSettle handler owns scrolling instead.
-            // hx-sync="this:replace" makes rapid clicks race-free: a newer navigation
-            // aborts the in-flight one instead of letting the slower response win.
-            // data-tocid lives on .content-shell (not body) because body is not refreshed
-            // by the swap; data-root is constant per depth so it stays on body.
-            // data-datav: fingerprint for the runtime-fetched data files (see Options).
+            // hx-boost turns same-origin <a> clicks into AJAX GETs targeting only
+            // #main, so the persistent chrome (outside #main) is never swapped.
+            // hx-sync="this:replace": a newer navigation aborts the in-flight one.
+            // hx-indicator: htmx toggles .htmx-request on #navProgress during
+            // requests; the CSS keys the progress animation off that class.
             var dataV = string.IsNullOrEmpty(o.DataVersion)
                 ? ""
                 : string.Format(" data-datav=\"{0}\"", Attr(o.DataVersion));
-            writer.WriteLine("<body data-root=\"{0}\"{1} hx-boost=\"true\" hx-target=\"#main\" hx-select=\"#main\" hx-swap=\"outerHTML\" hx-sync=\"this:replace\">",
+            writer.WriteLine("<body data-root=\"{0}\"{1} hx-boost=\"true\" hx-target=\"#main\" hx-select=\"#main\" hx-swap=\"outerHTML\" hx-sync=\"this:replace\" hx-indicator=\"#navProgress\">",
                              root, dataV);
 
             // First element in the tab order: lets keyboard users jump over the topbar
@@ -204,16 +165,12 @@ namespace SDKDocGenerator.Writers
             writer.WriteLine("<div class=\"layout\">");
             WriteSidebar(writer, root);
 
-            // tabindex="-1" lets app.js move focus here after an in-place swap (it is not a
-            // Tab stop) so keyboard/screen-reader users land in the new content.
-            // hx-history-elt confines htmx's Back/Forward snapshot+restore to #main: the
-            // chrome (and its event listeners) must never be serialized/replaced, or the
-            // topbar, sidebar and search modal come back as dead markup after a Back.
+            // tabindex="-1" lets app.js move focus here after a swap (not a Tab
+            // stop). hx-history-elt confines htmx's Back/Forward snapshot to #main —
+            // serializing the chrome would bring it back as dead markup.
             writer.WriteLine("<main id=\"main\" role=\"main\" tabindex=\"-1\" hx-history-elt>");
-            // The per-page identifier rides on .content-shell (inside #main, not on it):
-            // history restores swap only #main's innerHTML, so an attribute on #main
-            // itself would go stale, while .content-shell IS part of every swapped or
-            // restored payload. app.js syncActive reads it for active-node sync.
+            // data-tocid rides on .content-shell, not #main: history restores swap
+            // only #main's innerHTML, so an attribute on #main itself would go stale.
             writer.WriteLine("<div class=\"content-shell\" data-tocid=\"{0}\">",
                              Attr(o.TocId));
         }
@@ -238,8 +195,8 @@ namespace SDKDocGenerator.Writers
         /// </summary>
         public static void WriteChrome(TextWriter writer, string root, string contentSubFolder = "items")
         {
-            // Slim navigation progress bar, shown by app.js on htmx requests.
-            writer.WriteLine("<div id=\"navProgress\" class=\"nav-progress\" hidden></div>");
+            // Slim navigation progress bar; htmx shows it via hx-indicator (body).
+            writer.WriteLine("<div id=\"navProgress\" class=\"nav-progress\"></div>");
 
             // Visually-hidden polite live region. Lives in the persistent chrome (outside
             // #main) so it survives htmx swaps; app.js writes the new page title into it

@@ -1,6 +1,5 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Globalization;
 using System.IO;
 using System.Linq;
 
@@ -9,8 +8,7 @@ namespace SDKDocGenerator.Writers
     public class TOCWriter : BaseTemplateWriter
     {
         // internal (not private): the serialization contract these shapes feed is
-        // consumed by three independent clients (app.js sidebar sync, search-worker.js,
-        // index.html's legacy-bookmark resolver) and is pinned by unit tests.
+        // consumed by three independent clients and pinned by unit tests.
         internal class TocNode
         {
             public string Name;
@@ -27,25 +25,14 @@ namespace SDKDocGenerator.Writers
 
         private readonly Dictionary<string, NamespaceToc> _namespaceTocs = new Dictionary<string, NamespaceToc>();
 
-        // Local-search member index. Types and namespaces are already searchable from
-        // toc.json (the sidebar loads it), so this index covers only members. The
-        // client (search-worker.js) fetches its manifest + chunks progressively in
-        // the background, answering queries from the first chunk onward.
-        //   kind: 1=method 2=property 3=field 4=event 5=enum-member (constructors excluded).
-        // Built from the same per-namespace pass that builds toc.json (generation is
-        // sequential, so a plain accumulator is safe). Only members DECLARED on a type
-        // are indexed — inherited members appear on many pages and would bloat the
-        // index with duplicates; users still find them on their declaring type.
-        // Note: members are enumerated on the primary platform (same source as toc.json),
-        // so platform-exclusive method pages may not be represented in search.
-        // CONTRACT: these codes are mirrored by KIND_TABLE in resources/app.js
-        // (which maps each to its display group, icon, and sort rank) AND by
-        // ANCHOR_PREFIX in resources/search-worker.js (which derives the #anchor
-        // for the file-less property/field/enum-member rows from the kind code).
-        // Add or renumber a kind in all places together — a drift here makes the
-        // client derive wrong anchors while every build stays green, which is why
-        // the values are pinned by KindCodes_MatchClientAnchorPrefixes.
-        // internal (not private) so that test can reference the real constants.
+        // Local-search member index kind codes (toc.json already covers types and
+        // namespaces, so the index holds only members; constructors excluded).
+        // Only members DECLARED on a type are indexed — inherited members would
+        // duplicate across pages. CONTRACT: mirrored by GROUPS/KIND_ICONS in
+        // resources/app.js and ANCHOR_PREFIX in resources/search-worker.js (which
+        // derives #anchors from the kind code) — renumbering here with stale
+        // clients derives wrong anchors while every build stays green, so the
+        // values are pinned by KindCodes_MatchClientAnchorPrefixes.
         internal const int KindMethod = 1;
         internal const int KindProperty = 2;
         internal const int KindField = 3;
@@ -271,20 +258,13 @@ namespace SDKDocGenerator.Writers
             return href;
         }
 
-        // Rows per chunk file. ~50k rows keeps each chunk around 1.5-2 MB raw
-        // (~400 KB gzipped). The worker answers queries once the manifest AND the
-        // first chunk are in, and it fetches those two in parallel — so first-answer
-        // latency is bounded by the LARGER of the two, which at full-SDK scale is
-        // the manifest's type table (a few MB), not the chunk. Shrinking this knob
-        // therefore trims total transfer granularity but cannot cut first-answer
-        // latency below the manifest download; it mainly bounds how much a single
-        // failed/stalled chunk costs.
+        // Rows per chunk file: ~50k keeps each chunk around 1.5-2 MB raw
+        // (~400 KB gzipped). The worker answers queries once the manifest and the
+        // first chunk are in; this knob mainly bounds what one failed chunk costs.
         internal const int SearchIndexChunkRowCount = 50000;
 
-        // Index format version, emitted as "v" in the manifest and in every chunk.
+        // Index format version, emitted as "v" in the manifest and every chunk.
         // search-worker.js rejects anything else (CONTRACT: bump it there too).
-        // SdkDocGenerator folds this into DataVersion so a shape change always
-        // moves the data URLs off their previously cached ones.
         internal const int SearchIndexFormatVersion = 2;
 
         internal sealed class SearchIndexArtifact
@@ -297,45 +277,21 @@ namespace SDKDocGenerator.Writers
         /// Serializes the collected member entries into the doc-set root as a small
         /// manifest (search-index.json) plus one or more row chunks
         /// (search-index-&lt;n&gt;.json) that the client loads progressively:
-        ///   manifest: { "v":2, "g":"&lt;generation&gt;", "base":"items", "f":[ "S3", … ],
+        ///   manifest: { "v":2, "base":"items", "f":[ "S3", … ],
         ///               "t":[ [folderIdx, typeName, typeFile], … ],
         ///               "chunks":[ "search-index-0.json", … ] }
-        ///   chunk:    { "v":2, "g":"&lt;generation&gt;",
+        ///   chunk:    { "v":2,
         ///               "m":[ [typeIdx, kind, name],                           ← anchor kinds
         ///                     [typeIdx, kind, name, file],                     ← own-page kinds
         ///                     [typeIdx, kind, name, file, sig], … ] }          ← overloaded methods
-        /// "g" is the generation token: chunk rows reference the manifest's type
-        /// table BY INDEX, so the worker refuses any chunk whose g differs from its
-        /// manifest's — otherwise a mixed set (mid-publish origin, or a CDN holding
-        /// files from two releases) would resolve indexes against the wrong table
-        /// and emit wrong or undefined hrefs.
-        /// It is a CONTENT hash of everything an index resolves against (the folder
-        /// and type tables plus every member row), not a per-run nonce. That
-        /// distinction is what keeps the check from being a footgun: two runs that
-        /// produce byte-identical indexes agree on g, so a cache serving one
-        /// release's manifest beside another's chunks is only rejected when the
-        /// halves genuinely disagree. With a random token, ANY cache mixing two
-        /// runs — including republishing an unchanged doc set — would fail the
-        /// check, and because these URLs are meant to be served immutable, that
-        /// failure would persist until the data version moved. search-worker.js
-        /// also uses g as a last-resort cache buster on mismatch, which only works
-        /// because it is stable for a given index (see its retry note).
         /// Declaring types are interned into the manifest's "t" table so member rows
         /// carry an index, not a repeated type-name/file pair. Rows for anchor kinds
         /// (properties, fields, enum members — the overwhelming majority) omit the
-        /// file entirely: search-worker.js derives "&lt;typeFile&gt;#&lt;prefix&gt;&lt;name&gt;" with
-        /// the same prop_/field_/member_ prefixes FilenameGenerator.*Anchor emits
-        /// (CONTRACT: change them in both places together). Full hrefs resolve as
-        /// &lt;base&gt;/&lt;f[t[typeIdx][0]]&gt;/&lt;file&gt;. "base" is the configurable content
-        /// sub-folder (<see cref="GeneratorOptions.ContentSubFolderName"/>, usually
-        /// "items"), emitted here so the client doesn't hard-code it.
-        /// "v" is the index format version; search-worker.js rejects anything else, so
-        /// a stale/mismatched copy degrades to the visible "member search unavailable"
-        /// state instead of being misread. Bump it in both places on incompatible change.
-        /// Hosting note: every fetch of these files carries the release-specific
-        /// ?v= data-version query (DATA_VQ in app.js), making each URL immutable per
-        /// release — serve search-index*.json with long max-age/immutable cache
-        /// headers so the download cost is paid once per release, not per session.
+        /// file: search-worker.js derives "&lt;typeFile&gt;#&lt;prefix&gt;&lt;name&gt;" with the same
+        /// prop_/field_/member_ prefixes FilenameGenerator.*Anchor emits (CONTRACT:
+        /// change them together). Full hrefs resolve as &lt;base&gt;/&lt;f[t[typeIdx][0]]&gt;/&lt;file&gt;.
+        /// Every fetch carries the ?v= data-version query, so manifest and chunks
+        /// stay version-coherent and can be served with immutable cache headers.
         /// </summary>
         void WriteSearchIndexJson()
         {
@@ -404,15 +360,13 @@ namespace SDKDocGenerator.Writers
                 chunks.Add(rows.GetRange(start, count));
             }
 
-            var generationId = ComputeGenerationId(contentSubFolderName, folders, types, rows, chunkRowCount);
-
             var artifacts = new List<SearchIndexArtifact>
             {
                 new SearchIndexArtifact
                 {
                     FileName = "search-index.json",
                     Json = System.Text.Json.JsonSerializer.Serialize(
-                        new { v = SearchIndexFormatVersion, g = generationId, @base = contentSubFolderName, f = folders, t = types, chunks = chunkNames })
+                        new { v = SearchIndexFormatVersion, @base = contentSubFolderName, f = folders, t = types, chunks = chunkNames })
                 }
             };
             for (var c = 0; c < chunks.Count; c++)
@@ -420,67 +374,10 @@ namespace SDKDocGenerator.Writers
                 artifacts.Add(new SearchIndexArtifact
                 {
                     FileName = chunkNames[c],
-                    Json = System.Text.Json.JsonSerializer.Serialize(new { v = SearchIndexFormatVersion, g = generationId, m = chunks[c] })
+                    Json = System.Text.Json.JsonSerializer.Serialize(new { v = SearchIndexFormatVersion, m = chunks[c] })
                 });
             }
             return artifacts;
-        }
-
-        /// <summary>
-        /// Content fingerprint of one search index: identical inputs always produce
-        /// the same token, and any change that would make a chunk incoherent with a
-        /// manifest changes it. Covers the folder and type tables (what row indexes
-        /// resolve against), every row, the content sub-folder that hrefs are joined
-        /// with, and the chunk size (it decides which rows land in which chunk file,
-        /// so two runs that differ only there must not be mixed either).
-        /// Hashes a streamed text projection rather than the JSON: at full-SDK scale
-        /// the serialized index runs to tens of megabytes, and the artifacts are all
-        /// held in memory already — this way the fingerprint costs a fixed buffer
-        /// instead of a second copy of the whole index. Fields are newline/tab
-        /// delimited, which is unambiguous here because names are identifiers or
-        /// HTML-encoded type names and indexes are non-negative integers; nothing in
-        /// the index can contain a delimiter. Formatted invariantly so the token does
-        /// not depend on the build machine's culture.
-        /// </summary>
-        private static string ComputeGenerationId(
-            string contentSubFolderName, List<string> folders, List<object[]> types, List<object[]> rows, int chunkRowCount)
-        {
-            using (var sha = System.Security.Cryptography.SHA256.Create())
-            using (var crypto = new System.Security.Cryptography.CryptoStream(
-                       Stream.Null, sha, System.Security.Cryptography.CryptoStreamMode.Write))
-            using (var writer = new StreamWriter(crypto, new System.Text.UTF8Encoding(false)))
-            {
-                writer.Write(SearchIndexFormatVersion.ToString(CultureInfo.InvariantCulture));
-                writer.Write('\n');
-                writer.Write(chunkRowCount.ToString(CultureInfo.InvariantCulture));
-                writer.Write('\n');
-                writer.Write(contentSubFolderName ?? string.Empty);
-                writer.Write('\n');
-                WriteFingerprintRows(writer, folders.Select(f => new object[] { f }));
-                WriteFingerprintRows(writer, types);
-                WriteFingerprintRows(writer, rows);
-                writer.Flush();
-                crypto.FlushFinalBlock();
-                return BitConverter.ToString(sha.Hash, 0, 4).Replace("-", "").ToLowerInvariant();
-            }
-        }
-
-        // Row projection for ComputeGenerationId. The cell count is part of the text
-        // (rows are variable length — an omitted file means "derive the anchor
-        // client-side"), so a row cannot be confused with a longer one whose extra
-        // cells are empty.
-        private static void WriteFingerprintRows(TextWriter writer, IEnumerable<object[]> rows)
-        {
-            foreach (var row in rows)
-            {
-                writer.Write(row.Length.ToString(CultureInfo.InvariantCulture));
-                foreach (var cell in row)
-                {
-                    writer.Write('\t');
-                    writer.Write(Convert.ToString(cell, CultureInfo.InvariantCulture));
-                }
-                writer.Write('\n');
-            }
         }
 
         protected override string ReplaceTokens(string templateBody)
@@ -518,15 +415,10 @@ namespace SDKDocGenerator.Writers
                 nsToc.Nodes.Add(new TocNode
                 {
                     Name = type.GetDisplayName(false),
-                    // The id MUST equal the type page's runtime data-tocid so app.js can
-                    // sync/highlight the active node. The page sets data-tocid from
-                    // ClassWriter.GetTOCID() = FullName.Replace('.','_'), then
-                    // FilenameGenerator.Escape (backtick -> "&#96;"). The browser HTML-decodes
-                    // the attribute, so at runtime it reads back as FullName.Replace('.','_')
-                    // with a literal backtick. toc.json is JSON (no HTML decoding), so we write
-                    // the unescaped form here — escaping it would leave a literal "&#96;" that
-                    // never matches the decoded attribute. (GetDisplayName(true) diverges for
-                    // generic types — no namespace prefix, encoded "<>" — which broke sync.)
+                    // The id MUST equal the page's runtime data-tocid so app.js can
+                    // highlight the active node. The attribute is HTML-decoded by the
+                    // browser (backtick escape undone), toc.json is not — so write the
+                    // UNescaped form or generic-type ids never match.
                     Id = type.FullName.Replace('.', '_'),
                     Href = filePath
                 });
@@ -548,28 +440,16 @@ namespace SDKDocGenerator.Writers
             {
                 var nsToc = _namespaceTocs[ns];
 
-                // No expander button: TOC.html loads no JavaScript (it is the no-JS /
-                // SEO fallback), so the tree renders fully expanded and an empty,
-                // permanently aria-expanded="false" button would be inert and misleading.
-                // The anchor id exists solely for the aria-labelledby reference below;
-                // nothing styles or scripts this markup, so no classes or li ids.
+                // TOC.html is the no-JS / SEO fallback: fully expanded, so no expander
+                // button, and nothing styles or scripts this markup.
                 writer.Write(@"<li>
                                 <a href=""{1}"" id=""{0}-parentnode"">{2}</a>",
                              nsToc.Id,
                              nsToc.Href,
                              ns);
-                // No role: region is a LANDMARK, so one per namespace floods a screen
-                // reader's landmark list with 1,300+ entries (the scripted sidebar in
-                // app.js avoids the same trap by using group inside its tree), and ANY
-                // role here — region or group — overrides the native list semantics that
-                // are exactly what this markup wants. TOC.html is the no-JS/SEO
-                // fallback: a plain nested <ul> announces as "list, N items", which a
-                // namespace's type list should, and the nesting inside the parent <li>
-                // already conveys the grouping a group role would add.
-                // aria-labelledby stays (it is valid on the implicit list role) and must
-                // reference the anchor's actual id (nsId-parentnode); using nsName here
-                // previously dangled (no element has that id), leaving the list unnamed.
-                // <ul> is not void, so no self-closing slash.
+                // No role: region/group would flood a screen reader's landmark list or
+                // override the native list semantics this markup wants; aria-labelledby
+                // must reference the anchor's actual id or the list goes unnamed.
                 writer.Write("<ul aria-labelledby=\"{0}-parentnode\">", nsToc.Id);
 
                 foreach (var node in nsToc.Nodes)

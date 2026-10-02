@@ -62,12 +62,10 @@ namespace SDKDocGenerator
             { "note", "noteblock" }
         };
 
-        // HTML void elements — the only elements that may legally be emitted without a
-        // separate end tag. Everything else must get a full end tag (<div></div>), never
-        // the XML self-closing form (<div/>), which an HTML parser reads as an unclosed
-        // start tag that swallows the following siblings. None of the mapping targets
-        // (div/a/code/li/span/ul/ol) are void, so the emitted element is void iff its
-        // original NDoc local name is one of these (they pass through unmapped).
+        // HTML void elements — the only elements legally emitted without a separate
+        // end tag. Everything else must get a full end tag: an HTML parser reads the
+        // XML self-closing form (<div/>) as an unclosed start tag that swallows the
+        // following siblings.
         private static readonly HashSet<string> VoidHtmlElements = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
             "area", "base", "br", "col", "embed", "hr", "img", "input",
@@ -83,46 +81,22 @@ namespace SDKDocGenerator
             "base", "link", "meta", "template", "svg", "math"
         };
 
-        // Attributes that must never be copied from a doc comment into the page:
-        // inline event handlers and htmx attributes turn plain markup into script
-        // gadgets, and srcdoc/formaction smuggle whole documents/submissions.
-        // id would DOM-clobber the getElementById wiring in app.js, data-* are the
-        // client runtime's behavior hooks, and style/tabindex/autofocus reshape the
-        // page. rel/target/ping never flow through either: the generator writes its
-        // own target/rel on absolute links (an author copy could suppress or invert
-        // the noopener hardening, and a duplicate write aborts generation). class is
-        // handled separately in the copy loop (generator pre-pass classes survive,
-        // author classes don't).
-        private static bool IsSafeDocAttribute(string name)
+        // The only attributes a doc comment may carry onto the page (names arrive
+        // folded to lowercase); anything else — event handlers, hx-*/data-* hooks,
+        // id (DOM clobbering), style/tabindex (page reshaping), target/rel/ping
+        // (the generator writes its own on absolute links; an author copy could
+        // undo the noopener hardening, and a duplicate write aborts generation) —
+        // is dropped. href/src values are additionally scheme-checked, and class
+        // is restricted to GeneratorDocClasses in the copy loop.
+        private static readonly HashSet<string> AllowedDocAttributes = new HashSet<string>(StringComparer.Ordinal)
         {
-            return !(name.StartsWith("on", StringComparison.OrdinalIgnoreCase)
-                     || name.StartsWith("hx-", StringComparison.OrdinalIgnoreCase)
-                     || name.StartsWith("data-", StringComparison.OrdinalIgnoreCase)
-                     // form / formaction / formmethod / formtarget / formenctype /
-                     // formnovalidate: submission-override gadgets in one sweep.
-                     || name.StartsWith("form", StringComparison.OrdinalIgnoreCase)
-                     || name.Equals("srcdoc", StringComparison.OrdinalIgnoreCase)
-                     || name.Equals("id", StringComparison.OrdinalIgnoreCase)
-                     || name.Equals("style", StringComparison.OrdinalIgnoreCase)
-                     || name.Equals("tabindex", StringComparison.OrdinalIgnoreCase)
-                     || name.Equals("autofocus", StringComparison.OrdinalIgnoreCase)
-                     || name.Equals("accesskey", StringComparison.OrdinalIgnoreCase)
-                     || name.Equals("contenteditable", StringComparison.OrdinalIgnoreCase)
-                     || name.Equals("draggable", StringComparison.OrdinalIgnoreCase)
-                     || name.Equals("slot", StringComparison.OrdinalIgnoreCase)
-                     || name.Equals("is", StringComparison.OrdinalIgnoreCase)
-                     || name.Equals("rel", StringComparison.OrdinalIgnoreCase)
-                     || name.Equals("target", StringComparison.OrdinalIgnoreCase)
-                     || name.Equals("ping", StringComparison.OrdinalIgnoreCase));
-        }
+            "href", "cref", "name", "src", "alt", "title", "type", "width", "height", "class"
+        };
 
-        // The only class values that may survive DocBlobToHTML: classes the
-        // generator's own pre-pass stamps onto elements it inserts into the doc
-        // XML (PreprocessCodeBlocksToPreTags), which the client runtime needs
-        // (highlight.js keys on language-csharp). Author-written classes are
-        // dropped — they reach the shipped stylesheet's behavioral selectors
-        // (class="search-modal" is a full-viewport fixed overlay), the same
-        // page-reshaping power the style ban removes.
+        // The only class values that may survive: classes the generator's own
+        // pre-pass stamps into the doc XML (highlight.js keys on language-csharp).
+        // Author classes would reach the shipped stylesheet's behavioral selectors
+        // (class="search-modal" is a full-viewport overlay), so they are dropped.
         private static readonly HashSet<string> GeneratorDocClasses = new HashSet<string>(StringComparer.Ordinal)
         {
             "language-csharp",
@@ -870,16 +844,9 @@ namespace SDKDocGenerator
                                 if (DisallowedDocElements.Contains(elementName))
                                     elementName = "span";
 
-                                // Resolve the cref (if any) exactly once here; both the
-                                // <a>-vs-<span> decision below and the attribute loop further
-                                // down consume this single result instead of each calling
-                                // typeProvider.GetType (which could otherwise drift).
-                                // A malformed cref (not "X:Name") is a generation-time error
-                                // — a doc bug worth surfacing at build time — and the message
-                                // names the offending value so it can be found and fixed.
-                                // Skip for <list> (its attributes aren't copied below, and it
-                                // carries type=, never cref=) to keep the throw set identical
-                                // to the original attribute-loop behavior.
+                                // Resolve the cref (if any) exactly once; the <a>-vs-<span>
+                                // decision and the attribute loop both consume this result.
+                                // Skipped for <list>, whose attributes aren't copied.
                                 var crefAttr = isList ? null : GetDocAttribute(elementAttributes, crefAttributeName);
                                 TypeWrapper crefTargetType = null;
                                 string crefTypeName = null;
@@ -888,16 +855,11 @@ namespace SDKDocGenerator
                                 {
                                     if (crefAttr.StartsWith("!:", StringComparison.Ordinal))
                                     {
-                                        // "!:…" is the compiler's own could-not-resolve marker: it
-                                        // warns (CS1574/CS1584) but still writes the doc XML, and
-                                        // such crefs exist in shipping SDK sources. The payload is
-                                        // the author's ORIGINAL cref text verbatim and may itself
-                                        // contain colons ("!:Overload:Foo.Bar", "!:https://…"), so
-                                        // it must be taken whole, not shape-validated. A doc bug in
-                                        // one summary degrades like any unresolved cref (payload as
-                                        // encoded text, cref attribute dropped, nothing clickable —
-                                        // safe even for scheme-shaped payloads) rather than abort
-                                        // the whole ~100k-page generation run.
+                                        // "!:…" is the compiler's could-not-resolve marker (exists
+                                        // in shipping SDK sources). The payload is the author's
+                                        // original text verbatim and may contain colons, so take it
+                                        // whole; it degrades like any unresolved cref (encoded
+                                        // text, nothing clickable) rather than abort the run.
                                         crefTypeName = crefAttr.Substring(2);
                                         crefTargetType = null;
                                         crefIsUnresolved = true;
@@ -992,10 +954,9 @@ namespace SDKDocGenerator
                                         var attributeName = docAttribute.Key;
                                         var attributeValue = docAttribute.Value;
 
-                                        // Event handlers / htmx attributes / identity and
-                                        // behavior hooks never pass through, and src must
-                                        // carry a safe URL (see the helpers above).
-                                        if (!IsSafeDocAttribute(attributeName))
+                                        // Allowlist (see AllowedDocAttributes); src must
+                                        // additionally carry a safe URL.
+                                        if (!AllowedDocAttributes.Contains(attributeName))
                                             continue;
                                         if (string.Equals(attributeName, "src", StringComparison.OrdinalIgnoreCase)
                                             && !IsSafeDocUrl(attributeValue))
@@ -1063,13 +1024,10 @@ namespace SDKDocGenerator
                                         }
                                         else if (isName)
                                         {
-                                            // name only creates a fragment target on an anchor and
-                                            // is inert on demoted spans, but on document named
-                                            // objects (notably <img>, the only one not demoted) it
-                                            // becomes an own property of `document` that shadows
-                                            // prototype members — <img name="getElementById">
-                                            // would break every document.getElementById call in
-                                            // app.js. Drop it there (attribute and text echo).
+                                            // <img name="…"> becomes an own property of `document`
+                                            // that shadows prototype members (DOM clobbering —
+                                            // name="getElementById" would break app.js). Drop it
+                                            // there; on anchors name is just a fragment target.
                                             if (foldedLocalName == "img")
                                                 continue;
 
@@ -1088,14 +1046,10 @@ namespace SDKDocGenerator
 
                                     if (elementName == "a" && isAbsoluteLink)
                                     {
-                                        // target="_blank" opens the external link in its own tab;
                                         // rel=noopener severs the opener reference so the external
                                         // (doc-comment-supplied) page can't script this window.
-                                        // These are written unconditionally: author target/rel/ping
-                                        // were dropped by IsSafeDocAttribute above, so the
-                                        // generator's values are the only ones (an author copy
-                                        // could suppress or invert this hardening, and a duplicate
-                                        // rel write would abort generation).
+                                        // Written unconditionally — author target/rel never pass
+                                        // the allowlist, so these are the only writes.
                                         writer.WriteAttributeString(targetAttributeName, "_blank");
                                         writer.WriteAttributeString("rel", "noopener noreferrer");
                                     }
@@ -1104,9 +1058,8 @@ namespace SDKDocGenerator
                                 // if this is a self-closing element, close it
                                 if (selfClosingElement)
                                 {
-                                    // write empty element contents, if any — raw only for
-                                    // generator-built cross-reference HTML; doc-comment-supplied
-                                    // values (unresolved cref names, href/name echoes) are text.
+                                    // Raw only for generator-built cross-reference HTML;
+                                    // doc-comment-supplied values are text.
                                     if (!string.IsNullOrEmpty(emptyElementContents))
                                     {
                                         if (emptyElementContentsAreHtml)
@@ -1115,31 +1068,20 @@ namespace SDKDocGenerator
                                             writer.WriteString(emptyElementContents);
                                     }
 
-                                    // Close it. For non-void elements force a full end tag
-                                    // (<div></div>) — the XML self-closing form (<div/>) is read
-                                    // by an HTML parser as an unclosed start tag that swallows the
-                                    // following siblings. Void elements (br/wbr/img/…) keep the
-                                    // self-closing form, which is valid for them.
                                     WriteElementEnd(writer, foldedLocalName);
                                 }
 
                                 break;
                             case XmlNodeType.EndElement:
-                                // Same rule as the self-closing branch: an empty <para></para>
-                                // (no children) would otherwise be serialized as <div/> by
-                                // WriteEndElement. Force a full end tag for non-void elements.
                                 WriteElementEnd(writer, reader.LocalName);
                                 break;
                             case XmlNodeType.Text:
-                            // CDATA is authorable in /// comments; its content is doc text
-                            // and gets the same exactly-once encoding as any text node.
+                            // CDATA is authorable in /// comments; its content is doc text.
                             case XmlNodeType.CDATA:
-                                // Entity-encode: the XmlReader has already decoded entities, so
-                                // a raw write would turn "&lt;script&gt;" arriving in a doc
-                                // comment (service-model docs are authored outside this repo)
-                                // into live markup. Code samples reach here as plain text too
-                                // (see PreprocessCodeBlocksToPreTags) and are encoded exactly
-                                // once, here.
+                                // Entity-encode: the XmlReader already decoded entities, so a
+                                // raw write would turn "&lt;script&gt;" from a doc comment
+                                // (authored outside this repo) into live markup. Encoded
+                                // exactly once, here.
                                 writer.WriteString(reader.Value);
                                 break;
                             case XmlNodeType.Whitespace:

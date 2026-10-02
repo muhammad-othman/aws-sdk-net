@@ -214,18 +214,11 @@ namespace SDKDocGenerator.Writers
             return ComputeRelativePathToRoot(Artifacts.OutputFolder, filePath);
         }
 
-        // Static seam so the one path-depth computation every page depends on is
-        // pinned by unit tests: the returned prefix reaches the doc-set root from
-        // the page's folder, and every CSS/JS/cross-page reference on every page
-        // is built from it — a depth regression 404s all of them while the build
-        // stays green (it happened once with a single-separator split here).
-        // outputFolder is the ./items folder (the command-line docs root with
-        // "items" appended — see SdkDocGenerator); its PARENT is the doc-set
-        // root. filePath is a page inside it, built by Path.Combine(outputFolder,
-        // …), so the two share their prefix verbatim. String-based (no Path.*) so
-        // both separator styles behave identically on every OS: Path.* emits
-        // '\' on Windows and '/' elsewhere, and splitting on '\' alone once
-        // made every items/<Service>/ page one "../" short on Linux/macOS.
+        // Static seam, pinned by unit tests: every CSS/JS/cross-page reference is
+        // built from this prefix, and a depth regression 404s them all while the
+        // build stays green. String-based (no Path.*) so both separator styles
+        // behave identically on every OS — splitting on '\' alone once made every
+        // items/<Service>/ page one "../" short on Linux/macOS.
         internal static string ComputeRelativePathToRoot(string outputFolder, string filePath)
         {
             var separators = new[] { '\\', '/' };
@@ -566,18 +559,12 @@ namespace SDKDocGenerator.Writers
             AddSectionClosing(writer);
         }
 
-        // Reduces SyntaxWriter's legacy inline markup (keyword spans with hard-coded
-        // colors, <br/> line separators) to the plain text the highlight.js pipeline
-        // expects: hljs reads textContent — where a <br/> contributes nothing and an
-        // inline color style would fight the theme — and re-highlights from scratch.
-        // Only the generator's own markup (span/br) is removed structurally. The
-        // decode-then-re-encode pass leaves exactly ONE level of entity encoding on
-        // everything else, because the result is written into <pre><code> with no
-        // further encoding: generator entities (&lt;T&gt; in generic signatures)
-        // round-trip unchanged, while tag-shaped free text riding in through an
-        // [Obsolete("…")] message (interpolated verbatim by SyntaxWriter from
-        // service-model values authored outside this repo) leaves as inert text
-        // instead of live markup.
+        // Reduces SyntaxWriter's legacy inline markup (colored keyword spans, <br/>
+        // separators) to the plain text highlight.js expects. The decode-then-
+        // re-encode pass leaves exactly ONE level of entity encoding: generator
+        // entities (&lt;T&gt;) round-trip unchanged, while tag-shaped free text
+        // riding in through an [Obsolete("…")] message (authored outside this
+        // repo) leaves as inert text instead of live markup.
         public static string SyntaxMarkupToPlainText(string markup)
         {
             if (string.IsNullOrEmpty(markup))

@@ -124,16 +124,11 @@ namespace SDKDocGenerator.UnitTests
             Assert.Equal("search-index.json", files[0].FileName);
             Assert.Equal("search-index-0.json", files[1].FileName);
 
-            string generationId;
             using (var doc = JsonDocument.Parse(files[0].Json))
             {
                 var root = doc.RootElement;
                 // search-worker.js rejects any other version — bump BOTH sides together.
                 Assert.Equal(2, root.GetProperty("v").GetInt32());
-                // Generation token: chunks reference the manifest's type table by
-                // index, so the worker refuses chunks whose g differs (mixed releases).
-                generationId = root.GetProperty("g").GetString();
-                Assert.Matches("^[0-9a-f]{8}$", generationId);
                 Assert.Equal("items", root.GetProperty("base").GetString());
 
                 // Folder table: de-duplicated, ordered by first use.
@@ -162,7 +157,6 @@ namespace SDKDocGenerator.UnitTests
             {
                 var root = doc.RootElement;
                 Assert.Equal(2, root.GetProperty("v").GetInt32());
-                Assert.Equal(generationId, root.GetProperty("g").GetString()); // must match the manifest's
                 var rows = root.GetProperty("m");
                 Assert.Equal(4, rows.GetArrayLength());
 
@@ -259,82 +253,15 @@ namespace SDKDocGenerator.UnitTests
             }
         }
 
-        static string GenerationTokenOf(List<TOCWriter.MemberEntry> entries, string contentSubFolder = "items", int chunkRowCount = 100)
-        {
-            var files = TOCWriter.SerializeSearchIndexFiles(contentSubFolder, entries, chunkRowCount);
-            using (var doc = JsonDocument.Parse(files[0].Json))
-            {
-                return doc.RootElement.GetProperty("g").GetString();
-            }
-        }
-
-        static List<TOCWriter.MemberEntry> SampleEntries()
-        {
-            return new List<TOCWriter.MemberEntry>
-            {
-                new TOCWriter.MemberEntry { Folder = "S3", Name = "PutObject", Kind = 1, File = "MS3PutObject.html", Type = "AmazonS3Client", TypeFile = "TS3Client.html" },
-                new TOCWriter.MemberEntry { Folder = "S3", Name = "BucketName", Kind = 2, Type = "PutObjectRequest", TypeFile = "TPutObjectRequest.html" },
-            };
-        }
-
-        [Fact]
-        public void SearchIndex_GenerationToken_IsAContentHash_NotAPerRunNonce()
-        {
-            // This is the property the client's mixed-set rejection depends on being
-            // sane. With a per-run nonce, ANY cache holding one release's manifest
-            // beside another's chunks fails the check — including a republish of a
-            // byte-identical doc set — and because these URLs are served immutable
-            // that failure sticks until the data version moves, taking member search
-            // down with it. A content hash makes the check fire only when the halves
-            // genuinely disagree, and gives search-worker.js a stable cache buster to
-            // recover with.
-            Assert.Equal(GenerationTokenOf(SampleEntries()), GenerationTokenOf(SampleEntries()));
-        }
-
-        [Fact]
-        public void SearchIndex_GenerationToken_MovesWhenAnythingAChunkResolvesAgainstMoves()
-        {
-            var baseline = GenerationTokenOf(SampleEntries());
-
-            // A new member: chunk rows differ, so a chunk from before must not be
-            // paired with this manifest.
-            var added = SampleEntries();
-            added.Add(new TOCWriter.MemberEntry { Folder = "S3", Name = "Key", Kind = 2, Type = "PutObjectRequest", TypeFile = "TPutObjectRequest.html" });
-            Assert.NotEqual(baseline, GenerationTokenOf(added));
-
-            // A renamed member: same row count, same tables, different content.
-            // (MemberEntry is a struct — copy out, edit, put back.)
-            var renamed = SampleEntries();
-            var renamedEntry = renamed[0];
-            renamedEntry.Name = "PutObjectAsync";
-            renamed[0] = renamedEntry;
-            Assert.NotEqual(baseline, GenerationTokenOf(renamed));
-
-            // A moved type: the folder/type tables are what row indexes resolve
-            // against, so this is the case that would produce wrong hrefs.
-            var moved = SampleEntries();
-            var movedEntry = moved[1];
-            movedEntry.Folder = "S3Control";
-            moved[1] = movedEntry;
-            Assert.NotEqual(baseline, GenerationTokenOf(moved));
-
-            // The content sub-folder prefixes every href the client builds.
-            Assert.NotEqual(baseline, GenerationTokenOf(SampleEntries(), contentSubFolder: "api"));
-
-            // Chunk size decides which rows land in which file, so two runs that
-            // differ only here must not have their chunks interleaved either.
-            Assert.NotEqual(baseline, GenerationTokenOf(SampleEntries(), chunkRowCount: 1));
-        }
-
         [Fact]
         public void KindCodes_MatchClientAnchorPrefixes()
         {
             // The v2 index tags anchor-kind rows with these numeric codes, and
             // search-worker.js hard-codes ANCHOR_PREFIX = {2:"prop_", 3:"field_",
-            // 5:"member_"} to derive their hrefs (app.js's KIND_TABLE mirrors the
-            // full set for icons/grouping). Renumbering a constant without updating
-            // the client maps would make every affected deep-link derive the wrong
-            // anchor while the build stays green — this pins the pairing.
+            // 5:"member_"} to derive their hrefs (app.js's GROUPS/KIND_ICONS mirror
+            // the full set for icons/grouping). Renumbering a constant without
+            // updating the client maps would make every affected deep-link derive
+            // the wrong anchor while the build stays green — this pins the pairing.
             Assert.Equal(1, TOCWriter.KindMethod);
             Assert.Equal(2, TOCWriter.KindProperty);   // -> "prop_"
             Assert.Equal(3, TOCWriter.KindField);      // -> "field_"

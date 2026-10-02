@@ -29,8 +29,7 @@
     : "https://docs.aws.amazon.com";
 
   // Asset fingerprint, recovered from this script's own ?v= (DocShell stamps
-  // every CSS/JS link with it). Used to version runtime-constructed asset URLs
-  // (the search worker) so they can't go stale behind a CDN either.
+  // every CSS/JS link with it); versions the worker URL the same way.
   var ASSET_V = (function () {
     try {
       var src = document.currentScript && document.currentScript.src;
@@ -39,16 +38,10 @@
     } catch (e) { return ""; }
   })();
 
-  // Data fingerprint for the runtime-fetched data files (toc.json,
-  // search-index.json, _sdk-versions.json), emitted by the generator on
-  // <body data-datav>. Separate from ASSET_V: the data changes every SDK
-  // release while the static assets usually don't, so the asset hash could
-  // never bust a stale toc.json. DATA_VQ is the ready-to-append "?v=…".
-  var DATA_V = (function () {
-    try {
-      return (document.body && document.body.getAttribute("data-datav")) || "";
-    } catch (e) { return ""; }
-  })();
+  // Fingerprint for the runtime-fetched data files (toc.json, search index,
+  // _sdk-versions.json), from <body data-datav>; appended as ?v= so a CDN
+  // can't pair new pages with stale data. DATA_VQ is the ready "?v=…".
+  var DATA_V = (document.body && document.body.getAttribute("data-datav")) || "";
   var DATA_VQ = DATA_V ? "?v=" + DATA_V : "";
 
   /* ------------------------------- Theme ---------------------------- */
@@ -57,8 +50,7 @@
       var saved = localStorage.getItem(THEME_KEY);
       if (saved === "light" || saved === "dark") return saved;
     } catch (e) { /* private mode */ }
-    return (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches)
-      ? "dark" : "light";
+    return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
   }
 
   function applyTheme(theme) {
@@ -83,15 +75,10 @@
 
   // Follow OS theme changes at runtime — but only while the user hasn't made an
   // explicit choice (a stored value always wins, matching preferredTheme()).
-  try {
-    var mq = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)");
-    if (mq && mq.addEventListener) {
-      mq.addEventListener("change", function (ev) {
-        try { if (localStorage.getItem(THEME_KEY)) return; } catch (e) { /* private mode */ }
-        applyTheme(ev.matches ? "dark" : "light");
-      });
-    }
-  } catch (e) { /* matchMedia unavailable */ }
+  window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", function (ev) {
+    try { if (localStorage.getItem(THEME_KEY)) return; } catch (e) { /* private mode */ }
+    applyTheme(ev.matches ? "dark" : "light");
+  });
 
   /* --------------------------- Doc-set root ------------------------- */
   // Resolved once and cached: every page's data-root resolves to the same
@@ -118,18 +105,11 @@
     return new URL(rootRelative, rootAbs || docRoot()).href;
   }
 
-  // Freeze the persistent chrome's depth-relative links to absolute URLs NOW,
-  // at script-execute time. The chrome lives outside #main and is never
-  // swapped, but hx-boost captures each anchor's RAW href attribute when it
-  // processes the page (htmx's DOMContentLoaded init — which runs after this,
-  // because htmx.min.js registered its listener first but deferred scripts
-  // execute before DOMContentLoaded fires) and resolves it at click time
-  // against the CURRENT document URL. After any cross-depth swap (landing
-  // page items/… is depth 1, type pages items/<svc>/… are depth 2) the
-  // relative form resolves to items/items/… and 404s. On this first document
-  // the relative href still resolves correctly, so a.href gives the right
-  // absolute URL. Fragment-only hrefs (skip link) are left alone — htmx
-  // ignores them, and absolutizing would make them boostable.
+  // Freeze the chrome's depth-relative links to absolute URLs now: hx-boost
+  // resolves the RAW href attribute against the CURRENT document URL at click
+  // time, so after a cross-depth swap (items/… vs items/<svc>/…) a relative
+  // href would resolve to items/items/… and 404. Fragment-only hrefs (skip
+  // link) stay — htmx ignores them, and absolutizing would make them boostable.
   (function freezeChromeHrefs() {
     var links = document.querySelectorAll("#topbar a[href], #sidebar a[href]");
     for (var i = 0; i < links.length; i++) {
@@ -146,19 +126,12 @@
     return n;
   }
 
-  // toc.json stores HTML-encoded display names (e.g. generics as "Foo&lt;&gt;")
-  // because the static TOC.html fallback injects them as raw HTML. We render the
-  // sidebar/search via textContent, so decode entities first to show "Foo<>".
-  // Decoding goes through DOMParser: its documents have no browsing context, so
-  // nothing in the parsed string can load or execute — unlike the classic
-  // detached-textarea innerHTML trick, which becomes a live XSS sink the moment
-  // a payload breaks out of the RCDATA context ("</textarea><img onerror=…>").
-  // Hot paths (filter / modal matching) precompute decoded names once instead of
-  // calling this per keystroke — see loadSidebar.
+  // toc.json stores HTML-encoded display names (generics as "Foo&lt;&gt;"); we
+  // render via textContent, so decode first. DOMParser (not the detached-
+  // textarea innerHTML trick): its documents have no browsing context, so
+  // nothing in the parsed string can load or execute. Hot paths precompute
+  // decoded names once instead of calling this per keystroke — see loadSidebar.
   var _decoderParser = null;
-  // Shared because a DOMParser instance is stateless; also used by readHeadMeta
-  // to read the <head> of a boosted response (same no-browsing-context argument
-  // applies there: nothing in a parsed document loads or executes).
   function sharedParser() {
     if (!_decoderParser) _decoderParser = new DOMParser();
     return _decoderParser;
@@ -169,18 +142,10 @@
     return sharedParser().parseFromString(s, "text/html").documentElement.textContent;
   }
 
-  function cssEscape(s) {
-    if (window.CSS && CSS.escape) return CSS.escape(s);
-    return String(s).replace(/["\\\]]/g, "\\$&");
-  }
-
   // Navigate via htmx when available (in-place #main swap + history push), else a
   // normal load. `push` records the URL in history so it behaves like navigation.
   function navigateTo(href) {
     if (window.htmx) {
-      // No scroll modifier: #main is not a scroll container (the window
-      // scrolls), so htmx's scroll handling is a no-op here — the
-      // htmx:afterSettle handler below owns scrolling instead.
       window.htmx.ajax("GET", href, {
         target: "#main", select: "#main", swap: "outerHTML", push: href
       });
@@ -189,17 +154,11 @@
     }
   }
 
-  // Idempotent wiring guard: returns true and runs fn() the first time a given
-  // (node, key) is seen, false on every later call, so event listeners are
-  // bound exactly once even though onPageLoad runs on every htmx:afterSwap.
-  //
-  // The guard MUST live in JS state (WeakMap keyed on the live node), never in
-  // a DOM attribute: htmx's history support snapshots the history element's
-  // innerHTML (#main via hx-history-elt) and restores it on Back/Forward, which
-  // serializes attributes but not listeners. An attribute sentinel would come
-  // back "already wired" on freshly-restored nodes that have no listeners,
-  // permanently dead. A restored node is a new object, so the WeakMap correctly
-  // reports it as unwired and fn() re-binds.
+  // Idempotent wiring guard: runs fn() the first time a (node, key) is seen, so
+  // listeners bind once even though onPageLoad runs on every htmx:afterSwap.
+  // Must be JS state (WeakMap on the live node), never a DOM attribute: htmx's
+  // history restore serializes attributes but not listeners, so an attribute
+  // sentinel would come back "already wired" on listener-less restored nodes.
   var _wired = new WeakMap();
   function once(node, key, fn) {
     if (!node) return false;
@@ -245,14 +204,10 @@
 
 
 
-  // Sidebar and search-result links are built in JS *after* page load, so htmx's
-  // hx-boost (which only processes anchors present when it initializes / in
-  // swapped content) does not boost them — a plain click would trigger a full
-  // page load. Route left-clicks through navigateTo() for an in-place swap, but
-  // leave modified clicks (Ctrl/Cmd/middle/shift = open in new tab/window) and
-  // the real href alone so the no-JS fallback and "open in new tab" keep
-  // working. `beforeNav` runs only when we do navigate (the search modal
-  // closes itself before the swap).
+  // Sidebar and search-result links are built in JS after hx-boost initialized,
+  // so htmx never boosts them. Route left-clicks through navigateTo() for an
+  // in-place swap; leave modified clicks (Ctrl/Cmd/middle/shift) and the real
+  // href alone so open-in-new-tab and the no-JS fallback keep working.
   function boostClick(ev, href, beforeNav) {
     if (ev.defaultPrevented) return;
     if (ev.button !== 0 || ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey) return;
@@ -269,12 +224,10 @@
      to the sub-namespaces + its own types). Each level expands lazily. */
   var topNodes = [];         // ordered top-level node descriptors {kind, data}
   var idIndex = {};          // page tocid -> { highlightId, chainIds:[ancestor ids] }
-  // The exact #sidebarNav element the tree was last rendered into. Compared by
-  // identity, NOT a boolean: an htmx history restore (Back/Forward) can replace
-  // the whole sidebar DOM with a listener-less copy (cache hit) or an empty,
-  // unhydrated shell (cache miss) while module state survives — a boolean flag
-  // would report "built" forever and the sidebar would stay dead/empty until a
-  // full reload. When the element differs, re-render from the cached toc data.
+  // The exact #sidebarNav element the tree was last rendered into — identity,
+  // NOT a boolean: an htmx history restore can replace the sidebar DOM with a
+  // listener-less or empty copy while module state survives, and a boolean
+  // would report "built" forever. A differing element triggers a re-render.
   var builtNav = null;
 
   function serviceId(service) {
@@ -564,7 +517,6 @@
             break;
           case "Enter":
           case " ":
-          case "Spacebar":
             // Links activate natively on Enter; only link-less headers need help.
             if (item.tagName !== "A") {
               ev.preventDefault();
@@ -672,11 +624,9 @@
     nav.appendChild(msg);
   }
 
-  // The in-flight toc.json fetch, so concurrent loadSidebar calls (every htmx
-  // swap re-runs it) share one request. Without this, navigating before the
-  // first (large) fetch resolves starts duplicate fetches, and each late
-  // resolution rebuilds the tree — collapsing the user's expansions and
-  // clobbering an active filter view. Reset to null on failure so a later
+  // The in-flight toc.json fetch, shared by concurrent loadSidebar calls (every
+  // htmx swap re-runs it) — duplicate fetches would each rebuild the tree,
+  // collapsing the user's expansions. Reset to null on failure so a later
   // navigation can retry.
   var tocLoading = null;
 
@@ -705,14 +655,9 @@
           navUnavailable(nav);
           return;
         }
-        // Decode display names once up front so the filter / search modal do
-        // pure string matching per keystroke instead of an entity round-trip.
-        // Lowercase + acronym forms are precomputed alongside for the same
-        // reason: the modal's toc scan visits every name per (debounced)
-        // keystroke on the MAIN thread, and deriving these per row per query
-        // allocated ~2 strings × ~100k rows per keystroke at full-SDK scale.
-        // (acronymOf may be absent on a stale cached search-core.js; score()
-        // then just falls back to deriving lazily.)
+        // Precompute decoded/lowercase/acronym forms once: the filter and the
+        // modal's toc scan visit every name per keystroke on the main thread,
+        // and deriving these per row would allocate ~100k strings a keystroke.
         var acrOf = self.AwsDocsSearch && self.AwsDocsSearch.acronymOf;
         data.namespaces.forEach(function (ns) {
           ns.dname = decodeEntities(ns.name);
@@ -730,11 +675,8 @@
         renderTree();
         wireFilter();
         syncActive();
-        // A modal query typed while toc.json was in flight rendered without
-        // type/namespace hits (matchTocData returns [] until tocData exists),
-        // and only a worker reply or another keystroke would re-render — the
-        // worker's "ready" handler has a replay hook, the toc half didn't.
-        // Refresh the open modal so those hits appear the moment data lands.
+        // A modal query typed while toc.json was in flight had no toc hits;
+        // refresh the open modal so they appear the moment data lands.
         if (modalOpen() && lastQuery) renderModalResults();
       })
       .catch(function () {
@@ -773,15 +715,15 @@
     // Expand each ancestor (top → down), building children so the next level
     // exists in the DOM before we look for it.
     (entry.chainIds || []).forEach(function (id) {
-      var li = document.querySelector('#sidebarNav .toc-node[data-id="' + cssEscape(id) + '"]');
+      var li = document.querySelector('#sidebarNav .toc-node[data-id="' + CSS.escape(id) + '"]');
       if (li) setExpanded(li, true);
     });
 
-    var row = document.querySelector('#sidebarNav .toc-row[data-id="' + cssEscape(entry.highlightId) + '"]');
+    var row = document.querySelector('#sidebarNav .toc-row[data-id="' + CSS.escape(entry.highlightId) + '"]');
     if (row) {
       row.classList.add("is-active");
       // Bring it into view within the sidebar without yanking the page.
-      if (row.scrollIntoView) row.scrollIntoView({ block: "nearest" });
+      row.scrollIntoView({ block: "nearest" });
       // Make the active node the tree's single Tab stop (roving tabindex),
       // without stealing focus from wherever the user is.
       var nav = document.getElementById("sidebarNav");
@@ -813,16 +755,12 @@
   function closeDrawer() { setDrawerOpen(false); }
 
   // Reset drawer state when the viewport leaves the drawer breakpoint: past
-  // 1024px the CSS scrim and hamburger stop applying, but body.nav-open and
-  // #main's `inert` would otherwise persist — the whole content region dead,
-  // with no visual cue and no toggle to clear it. Keep the media query in sync
-  // with the @media (max-width: 1024px) block in aws-docs.css.
-  try {
-    var drawerMq = window.matchMedia("(max-width: 1024px)");
-    var onDrawerMq = function (ev) { if (!ev.matches) closeDrawer(); };
-    if (drawerMq.addEventListener) drawerMq.addEventListener("change", onDrawerMq);
-    else if (drawerMq.addListener) drawerMq.addListener(onDrawerMq);
-  } catch (e) { /* matchMedia unavailable */ }
+  // 1024px the scrim/hamburger CSS stops applying but body.nav-open and #main's
+  // `inert` would persist, leaving the content dead with no toggle to clear it.
+  // Keep in sync with the @media (max-width: 1024px) block in aws-docs.css.
+  window.matchMedia("(max-width: 1024px)").addEventListener("change", function (ev) {
+    if (!ev.matches) closeDrawer();
+  });
 
   function wireChrome() {
     var navToggle = document.getElementById("navToggle");
@@ -859,17 +797,12 @@
      Local search
      -------------------------------------------------------------------
      The default scope ("Documentation - This Guide") searches THIS API
-     reference locally in a command-palette modal; every other scope
-     keeps escalating to the external AWS search (searchFormSubmit).
-     The modal opens when the user starts typing in the topbar box (the
-     keystroke is handed off to the modal's own input), or via ⌘K /
-     Ctrl-K / "/". Results render live, grouped by kind.
-     Two result sources, ranked on one scale by the shared scorer in
-     search-core.js (self.AwsDocsSearch.score):
-       • types + namespaces — matched synchronously from the in-memory
-         tocData (loaded by the sidebar section), zero latency.
-       • members (methods/properties/fields/events/enum) — matched in
-         search-worker.js off the main thread; they merge in a beat later.
+     reference locally in a command-palette modal (opened by typing in
+     the topbar box, or ⌘K / Ctrl-K / "/"); every other scope escalates
+     to the external AWS search. Two result sources, ranked on one scale
+     by the shared scorer in search-core.js: types + namespaces matched
+     synchronously from tocData, members matched in search-worker.js off
+     the main thread (merging in a beat later).
      =================================================================== */
 
 
@@ -878,41 +811,27 @@
   var SEARCH_DEBOUNCE_MS = 90;   // coalesce keystrokes before scanning toc data
   var score = (self.AwsDocsSearch && self.AwsDocsSearch.score) || null;
 
-  /* ---------------------- Result-kind taxonomy ----------------------
-     Single source of truth for the result kinds. The numeric codes match
-     TOCWriter (1 method, 2 property, 3 field, 4 event, 5 enum-member); "ns"
-     and "type" are local pseudo-kinds for the tocData matches. GROUPS (display
-     order), the icon mapping, and the tie-break rank are all derived from this
-     one table so they cannot drift. If you add a kind, add it HERE and in
-     TOCWriter's Kind* constants.
-     Icons reuse the member-table icon classes (aws-docs.css) so search results
-     and member rows share one icon system; only "ico-namespace" is
-     search-specific (namespaces have no member-table row). */
-  var KIND_TABLE = [
-    { code: "ns",   label: "Namespaces",  icon: "ico-namespace",  rank: 0 },
-    { code: "type", label: "Types",       icon: "class",          rank: 1 },
-    { code: 1,      label: "Methods",     icon: "publicMethod",   rank: 2 },
-    { code: 2,      label: "Properties",  icon: "publicProperty", rank: 2 },
-    { code: 3,      label: "Fields",      icon: "field",          rank: 2 },
-    { code: 4,      label: "Events",      icon: "event",          rank: 2 },
-    { code: 5,      label: "Enum values", icon: "enum",           rank: 2 }
+  // Result kinds. Numeric codes mirror TOCWriter's Kind* constants (change
+  // both together); "ns"/"type" are local pseudo-kinds for the tocData matches.
+  // Icons reuse the member-table icon classes so both share one icon system.
+  var GROUPS = [
+    { code: "ns",   label: "Namespaces" },
+    { code: "type", label: "Types" },
+    { code: 1,      label: "Methods" },
+    { code: 2,      label: "Properties" },
+    { code: 3,      label: "Fields" },
+    { code: 4,      label: "Events" },
+    { code: 5,      label: "Enum values" }
   ];
-  var KIND_BY_CODE = {};
-  KIND_TABLE.forEach(function (k) { KIND_BY_CODE[k.code] = k; });
-
-  // Result groups in display order (one per kind that can appear).
-  var GROUPS = KIND_TABLE.map(function (k) {
-    return { code: k.code, label: k.label };
-  });
+  var KIND_ICONS = { ns: "ico-namespace", type: "class", 1: "publicMethod", 2: "publicProperty", 3: "field", 4: "event", 5: "enum" };
 
   function kindIconClass(kind) {
-    var k = KIND_BY_CODE[kind];
-    return k ? k.icon : "class";
+    return KIND_ICONS[kind] || "class";
   }
 
+  // Tie-break rank: namespaces, then types, then members.
   function kindRank(kind) {
-    var k = KIND_BY_CODE[kind];
-    return k ? k.rank : 2;
+    return kind === "ns" ? 0 : kind === "type" ? 1 : 2;
   }
 
   /* ------------------------------ State ----------------------------- */
@@ -925,8 +844,6 @@
   var memberResults = [];        // most recent member matches from the worker
   var memberTotal = 0;           // TOTAL member matches (beyond the returned cap)
   var memberPending = false;     // worker reply for the current searchSeq still outstanding
-  var memberCoverage = 0;        // % of the chunked member index loaded so far (0-100)
-  var memberIndexIncomplete = false; // a later chunk failed; corpus stays partial
   var activeIndex = -1;          // highlighted row (flattened across groups)
   var currentRows = [];          // descriptors backing the rendered rows, in order
   var lastFocus = null;          // element focused before the modal opened (restored on close)
@@ -949,11 +866,9 @@
   function ensureWorker() {
     if (searchWorker || workerReady || workerFailed || workerUnsupported) return;
     if (typeof Worker === "undefined" || window.location.protocol === "file:") {
-      // No worker support — or file://, where the Worker constructor throws a
-      // SecurityError and fetch of the index is blocked anyway. Permanent for
-      // this environment, so workerUnsupported is never reset (unlike the
-      // retriable workerFailed latch — see openSearchModal). Fail visibly:
-      // renderModalResults shows the members-unavailable note off workerFailed.
+      // No worker support — or file://, where Worker throws and the index
+      // fetch is blocked anyway. Permanent for this environment (never reset,
+      // unlike the retriable workerFailed latch). Fail visibly.
       workerUnsupported = true;
       workerFailed = true;
       renderModalResults();
@@ -969,23 +884,15 @@
         var msg = ev.data || {};
         if (msg.type === "ready") {
           workerReady = true;
-          memberCoverage = typeof msg.pct === "number" ? msg.pct : 100;
           if (lastQuery) postWorkerQuery(lastQuery);
         } else if (msg.type === "progress") {
-          // Another index chunk landed (or failed — incomplete). Re-run the
-          // live query so its results reflect the grown corpus, and re-render
-          // so the coverage note stays current. searchSeq is untouched: the
-          // re-query answers the SAME query, so its reply must not be
-          // treated as stale. incomplete is a level, not an edge: each
-          // progress message re-states whether chunks are still missing, so a
-          // successful retry pass clears the latch here.
-          memberCoverage = typeof msg.pct === "number" ? msg.pct : memberCoverage;
-          memberIndexIncomplete = !!msg.incomplete;
+          // Another index chunk landed: re-run the live query so results
+          // reflect the grown corpus. searchSeq is untouched — the re-query
+          // answers the SAME query, so its reply must not read as stale.
           if (lastQuery && workerReady) {
             memberPending = true;
             postWorkerQuery(lastQuery);
           }
-          renderModalResults();
         } else if (msg.type === "results") {
           if (msg.seq !== searchSeq) return; // stale
           memberPending = false;
@@ -1002,12 +909,8 @@
         }
       };
       searchWorker.onerror = function () { workerFail(); };
-      // DATA_VQ cache-busts the index: members added in a new SDK release must
-      // not be missing from a CDN-cached search-index.json paired with new
-      // pages. The worker propagates the same ?v= to the sibling chunk files
-      // the manifest lists, so the whole set is version-coherent.
-      memberCoverage = 0;
-      memberIndexIncomplete = false;
+      // DATA_VQ cache-busts the index; the worker propagates the same ?v= to
+      // the sibling chunk files so the whole set is version-coherent.
       searchWorker.postMessage({ type: "init", indexUrl: new URL("search-index.json" + (DATA_VQ || ""), rootAbs).href });
     } catch (e) { workerFail(); }
   }
@@ -1035,33 +938,21 @@
   var _tocMatchCacheTotal = 0;
 
   // Match types + namespaces from the in-memory toc data (instant, no fetch).
-  // Names, lowercase forms, and acronyms are precomputed by loadSidebar
-  // (ns.dname/lname/acr), so the scan allocates nothing per row.
-  // Keeps only the best SEARCH_LIMIT rows via the shared top-N collector
-  // (search-core.js — the worker ranks members with the same one) instead of
-  // collecting-then-sorting every hit — a 1-2 character query matches tens of
-  // thousands of names at full-SDK scale, and this runs per (debounced)
-  // keystroke on the main thread. _tocMatchTotal still counts everything so
-  // the overflow note can say how much was cut.
-  // The last query's result is cached: every render calls this (the immediate
-  // keystroke render AND the worker-reply merge render), and without the cache
-  // each keystroke paid the full scan twice. Returns a copy — mergedMatches
-  // pushes member rows into the returned array.
+  // Hot path (per debounced keystroke, main thread): names/lowercase/acronyms
+  // are precomputed by loadSidebar, the shared top-N collector avoids sorting
+  // every hit, and the last query's result is cached because every render
+  // calls this twice (keystroke render + worker-merge render). Returns a copy
+  // — mergedMatches pushes member rows into it.
   function matchTocData(q) {
     if (q === _tocMatchCacheQ && _tocMatchCacheRows) {
       _tocMatchTotal = _tocMatchCacheTotal;
       return _tocMatchCacheRows.slice();
     }
     _tocMatchTotal = 0;
-    // makeTopN guarded like score: with a stale search-core.js (CDN cache from
-    // an older deploy) the export set may predate either helper, and a throw
-    // here would kill the whole modal render, not just type/namespace rows.
     if (!tocData || !tocData.namespaces || !score || !self.AwsDocsSearch.makeTopN) return [];
     var top = self.AwsDocsSearch.makeTopN(SEARCH_LIMIT);
     // Dotted queries ("S3.PutObjectRequest") miss the plain scorer for TYPE
-    // nodes (their names are unqualified); retry those namespace-qualified.
-    // Namespace names contain dots themselves, so they already match dotted
-    // queries directly. Hoisted: the dot check is per-query, not per-row.
+    // nodes (unqualified names); retry those namespace-qualified.
     var scoreQualified = self.AwsDocsSearch.scoreQualified;
     var qualified = q.indexOf(".") !== -1 && scoreQualified;
 
@@ -1094,10 +985,8 @@
         name: m.name,
         // The worker joins base/folder/file into a root-relative href itself.
         href: m.href,
-        // The declaring-type context comes from search-index.json HTML-encoded
-        // (e.g. generic "Constant&lt;T&gt;"); decode so it renders like the
-        // toc-sourced type results (which use decoded dname). The same applies
-        // to the overload signature (present only for overloaded methods).
+        // Type context and overload sig arrive HTML-encoded from the index;
+        // decode so they render like the toc-sourced results.
         type: decodeEntities(m.type || ""),
         sig: m.sig ? decodeEntities(m.sig) : null,
         score: m.score
@@ -1114,19 +1003,11 @@
 
   function isTocKind(kind) { return kind === "ns" || kind === "type"; }
 
-  // Cap the merged list at SEARCH_LIMIT, but never let members crowd out every
-  // type/namespace row. Score alone does that constantly: member names repeat
-  // across the SDK (hundreds of types declare "BucketName", "Marker",
-  // "NextToken", every request type has "Validate"), so a query that hits one
-  // exactly fills all 50 slots with same-scored EXACT-tier members and evicts
-  // the PREFIX/SUBSTR-tier TYPE the user was far more likely reaching for —
-  // "S3Bucket" would list dozens of BucketName properties and not the
-  // S3BucketResource type. Reserve up to TOC_RESERVED_SLOTS of the cap for toc
-  // rows when there are that many to show, and spend the rest on members.
-  // This only changes which rows are DROPPED: the sort above still decides
-  // order, the groups still render in kind order, and the "+N more" note still
-  // counts everything cut. Never yields fewer rows than the plain cap did —
-  // the reserve is bounded by the number of toc rows actually available.
+  // Cap at SEARCH_LIMIT, but reserve some slots for type/namespace rows:
+  // member names repeat SDK-wide ("BucketName", "Validate"), so exact-tier
+  // members would otherwise evict the TYPE the user was likely reaching for.
+  // Only changes which rows are DROPPED — order and overflow count are
+  // unaffected, and it never yields fewer rows than a plain cap.
   var TOC_RESERVED_SLOTS = 10;
   function capResults(all) {
     if (all.length <= SEARCH_LIMIT) return all;
@@ -1154,24 +1035,10 @@
     if (status) status.textContent = text || "";
   }
 
-  // "Searching members…", qualified with how much of the chunked index has
-  // loaded when that's mid-way — a first-visit search can be answered against
-  // a partial corpus, and results that grow afterwards need explaining.
-  function searchingMembersLabel() {
-    return memberCoverage > 0 && memberCoverage < 100
-      ? "Searching members (" + memberCoverage + "% of index loaded)…"
-      : "Searching members…";
-  }
-
-  // Render the modal body: results partitioned into kind groups (fixed order),
-  // each group keeping its members in score order. currentRows is a flat array
-  // in the same visual order so ↑/↓/Enter traverse across groups.
   /* ------------------- External docs-search URL ----------------------
-     Shared by the modal's full-text escape hatch (#searchModalExternal, the
-     guide scope) and searchFormSubmit's documentation scopes. Built explicitly
-     (path?query#fragment) and opened by us rather than via native form-GET:
-     native submission with a #fragment in the action is fragile — depending on
-     the host it can drop the ".html" extension and/or the query string. */
+     Shared by the modal's full-text escape hatch and searchFormSubmit's
+     documentation scopes. Built and opened by us, not native form-GET:
+     native submission with a #fragment in the action is fragile. */
 
   // application/x-www-form-urlencoded component: spaces become "+".
   function enc(s) { return encodeURIComponent(s).replace(/%20/g, "+"); }
@@ -1252,42 +1119,22 @@
 
     if (!all.length) {
       // Never print a confident "No matches" while the worker still owes a
-      // reply for this query — on a fresh load that reply can be a chunk
-      // download away, and a member-only query has zero toc rows. A "no
-      // matches" over a partial corpus is qualified, not confident: the name
-      // could live in a chunk that hasn't arrived (or failed to).
+      // reply — a member-only query has zero toc rows until it answers.
       setStatus(workerFailed
         ? "No type or namespace matches. Member search is unavailable — the search index could not be loaded."
         : memberPending
-          ? searchingMembersLabel()
-          : memberIndexIncomplete
-            ? "No matches for “" + lastQuery + "” — but part of the member index failed to load, so members may be missing"
-            : memberCoverage < 100
-              ? "No matches yet — " + memberCoverage + "% of the member index searched so far…"
-              : "No matches for “" + lastQuery + "”");
+          ? "Searching members…"
+          : "No matches for “" + lastQuery + "”");
       return;
     }
 
     var frag = document.createDocumentFragment();
-    // Partition rows into the fixed-order kind groups, then sweep EVERYTHING
-    // no group claimed (an index emitted by a newer generator that added a
-    // kind code before this file learned it) into a trailing "Other" group —
-    // dropping them would render nothing while they still occupy `all` slots,
-    // silently skewing the "+N more" arithmetic below. The sweep is by
-    // claimed-index, not a second kind lookup: the groups match with ===, so
-    // a lookup with different coercion (e.g. `in`, which stringifies) would
-    // re-open the exact crack this exists to close (a string "1" kind matches
-    // no group AND reads as known). kindIconClass/kindRank already fall back
-    // for unknown codes.
-    var claimed = [];
+    // Partition rows into the fixed-order kind groups; each group keeps its
+    // rows in score order, and currentRows mirrors the visual order so
+    // ↑/↓/Enter traverse across groups.
     var sections = GROUPS.map(function (g) {
-      return { label: g.label, rows: all.filter(function (r, i) {
-        if (r.kind !== g.code) return false;
-        claimed[i] = true;
-        return true;
-      }) };
+      return { label: g.label, rows: all.filter(function (r) { return r.kind === g.code; }) };
     });
-    sections.push({ label: "Other", rows: all.filter(function (r, i) { return !claimed[i]; }) });
     sections.forEach(function (g) {
       var rows = g.rows;
       if (!rows.length) return;
@@ -1309,15 +1156,9 @@
         row.setAttribute("role", "option");
         row.setAttribute("aria-selected", "false");
         row.setAttribute("data-idx", String(idx));
-        // Options must NOT be tab stops. This is an aria-activedescendant listbox:
-        // DOM focus stays on the combobox input, which owns every arrow/Enter key
-        // (onModalKeydown is bound to mInput alone). Left focusable, an <a href>
-        // option would be picked up both by Tab and by onModalTabTrap's
-        // 'a[href]' selector, moving real focus onto a row that reports
-        // aria-selected="false" while the highlight and aria-activedescendant stay
-        // on the arrow-selected one — and stranding the arrow keys. Same roving
-        // treatment as the sidebar treeitems. Modified/middle clicks are
-        // unaffected: href and the click handler stay as they were.
+        // Options must NOT be tab stops: this is an aria-activedescendant
+        // listbox — DOM focus stays on the combobox input, which owns the
+        // arrow/Enter keys. A focusable <a href> option would strand them.
         row.tabIndex = -1;
         row.appendChild(el("span", "search-ico " + kindIconClass(r.kind)));
         var nameSpan = el("span", "search-name", r.name);
@@ -1349,16 +1190,7 @@
     // Member results may still be on their way (index downloading / worker
     // ranking): say so, or their later pop-in looks like a glitch.
     if (memberPending) {
-      statusText += (statusText ? " · " : "") + searchingMembersLabel();
-    } else if (memberCoverage < 100 && !memberIndexIncomplete && !workerFailed) {
-      // Not waiting on a reply, but the corpus is still growing — the
-      // progress handler will re-query and re-render as chunks land.
-      statusText += (statusText ? " · " : "")
-        + memberCoverage + "% of the member index searched — more loading…";
-    }
-    if (memberIndexIncomplete && !workerFailed) {
-      statusText += (statusText ? " · " : "")
-        + "part of the member index failed to load; some members may be missing";
+      statusText += (statusText ? " · " : "") + "Searching members…";
     }
     if (workerFailed) {
       statusText += (statusText ? " · " : "")
@@ -1404,7 +1236,7 @@
     // Point the combobox at the active option so screen readers announce it
     // while focus stays in the input (ARIA activedescendant pattern).
     if (input && rows[idx].id) input.setAttribute("aria-activedescendant", rows[idx].id);
-    if (scroll !== false && rows[idx].scrollIntoView) rows[idx].scrollIntoView({ block: "nearest" });
+    if (scroll !== false) rows[idx].scrollIntoView({ block: "nearest" });
     activeIndex = idx;
   }
 
@@ -1423,23 +1255,12 @@
     var modal = document.getElementById("searchModal");
     var input = document.getElementById("searchModalInput");
     if (!modal || !input) return;
-    // A transient index-load failure (network blip, CDN 5xx) must not disable
-    // member search for the rest of the session — under hx-boost this module
-    // lives across every in-place navigation, so a permanent latch could last
-    // hours. Clear it so ensureWorker retries: at most once per modal open,
-    // and never when the cause is permanent (workerUnsupported). The
-    // !modalOpen() gate is what makes it "once per open": openSearchModal is
-    // idempotent and re-fires per gesture while already open (IME-composing
-    // topbar keystrokes, launcher re-focus) — clearing on those too would
-    // spawn a fresh worker + index fetch per keystroke against a failing CDN.
+    // A transient index-load failure must not disable member search for the
+    // rest of the (hx-boost-long) session. Clear the latch so ensureWorker
+    // retries — at most once per modal open (the !modalOpen() gate; the modal
+    // re-fires openSearchModal per gesture while open), and never when the
+    // cause is permanent (workerUnsupported).
     if (!modalOpen() && workerFailed && !workerUnsupported) workerFailed = false;
-    // Same once-per-open rhythm for PARTIAL index loads: if some chunks failed
-    // earlier (transient CDN error / timeout), ask the live worker to re-fetch
-    // just those. The worker ignores this while a pass is already in flight,
-    // and a progress message clears memberIndexIncomplete on success.
-    if (!modalOpen() && memberIndexIncomplete && searchWorker && workerReady) {
-      searchWorker.postMessage({ type: "retry" });
-    }
     // Remember what had focus so we can restore it on close (a11y).
     if (!modalOpen()) lastFocus = document.activeElement;
     modal.hidden = false;
@@ -1502,18 +1323,11 @@
   }
 
   /* --------------------------- Input wiring ------------------------- */
-  // Keystroke handoff: when the user types in the default-scope topbar box, open
-  // the modal seeded with the typed text and clear the box (so the character is
-  // not duplicated and the modal owns input). Using the "input" event guarantees
-  // the value already includes the keystroke (also covers paste). IME composition
-  // is the one exception: clearing the box or moving focus mid-composition
-  // aborts the composition and commits its raw keystrokes as ASCII. But merely
-  // WAITING for the commit is no good either — composing-by-default keyboards
-  // (Android/Gboard underline ordinary Latin too) would show nothing until the
-  // word commits. So while composing, open the modal for live results WITHOUT
-  // the disruptive half (box keeps its text and focus, so the composition
-  // continues); the real handoff (clear + focus) completes on compositionend
-  // (wireSearch).
+  // Keystroke handoff: typing in the default-scope topbar box opens the modal
+  // seeded with the typed text and clears the box. IME composition is the
+  // exception — clearing/refocusing mid-composition aborts it and commits raw
+  // ASCII — so while composing, only surface live results (box keeps text and
+  // focus); the real handoff completes on compositionend (wireSearch).
   function onTopbarInput(ev) {
     var input = document.getElementById("sq");
     if (!input) return;
@@ -1536,13 +1350,8 @@
       case "ArrowDown": ev.preventDefault(); setActive(activeIndex + 1); break;
       case "ArrowUp":   ev.preventDefault(); setActive(activeIndex - 1); break;
       case "Enter":
-        // Flush a pending debounce first, so Enter acts on what the input
-        // shows — not on the previous render's results. Typing + a fast Enter
-        // (palette muscle memory, or right after the topbar handoff) otherwise
-        // navigates to the top hit of the query minus its last keystrokes.
-        // Member (worker) matches for the flushed query can't exist yet, so a
-        // member-only query leaves zero rows and this Enter is a no-op — the
-        // deliberate trade-off: never navigate anywhere the user hasn't seen.
+        // Flush a pending debounce so Enter acts on what the input shows, not
+        // the previous render — never navigate anywhere the user hasn't seen.
         debouncedModalSearch.flush();
         if (activeIndex >= 0 && currentRows[activeIndex]) {
           ev.preventDefault();
@@ -1605,13 +1414,10 @@
     if (input) {
       once(input, "data-search-wired", function () {
         input.addEventListener("input", onTopbarInput);
-        // IME: composing input only surfaces results (see onTopbarInput); the
-        // full handoff — clear the box, focus the modal — runs once the
-        // composition commits. Deferred a tick: a composition also commits
-        // when the user LEAVES the field (tap elsewhere dismissing the
-        // keyboard, desktop IME blur), and stealing focus back then would
-        // yank them into the modal they were abandoning. After the timeout,
-        // that blur has landed and the focus check skips the handoff.
+        // Full IME handoff once the composition commits. Deferred a tick: a
+        // composition also commits when the user LEAVES the field, and
+        // stealing focus back then would yank them into the modal they were
+        // abandoning — after the timeout the focus check skips that case.
         input.addEventListener("compositionend", function () {
           setTimeout(function () {
             if (document.activeElement === input) onTopbarInput();
@@ -1687,8 +1493,8 @@
      -------------------------------------------------------------------
      Per-page behavior that runs on first load and on every htmx
      navigation: highlight.js, copy buttons, the "In this article"
-     dropdown, scroll handling, the nav progress bar, and the
-     back-compat globals generated pages still call inline.
+     dropdown, scroll handling, and the back-compat globals generated
+     pages still call inline.
      =================================================================== */
 
 
@@ -1742,23 +1548,13 @@
     });
   }
 
-  // WCAG 2.1.1 (keyboard). The horizontal scroll container for a wide sample is
-  // the inner `pre > code` — that is where overflow-x: auto lives — and a scroll
-  // container that cannot take focus can only be panned with a pointer, so a
-  // keyboard-only reader has no way to reach the right-hand end of a long
-  // signature. tabindex="0" makes it a tab stop whose arrow keys scroll it
-  // natively.
-  //
-  // role="group" and a name, not role="region": region is a LANDMARK, and a
-  // class page with a dozen samples would put a dozen of them in the landmark
-  // list. The role is not optional though — aria-label on an element with no
-  // role is not reliably exposed, and an unnamed stop announces by reading out
-  // the whole sample.
-  //
-  // Only blocks that actually overflow are marked; a tab stop on every one-line
-  // snippet is noise. That depends on layout, hence the re-run on resize — which
-  // is also what text zoom triggers, and zoom is exactly when a sample that used
-  // to fit starts to scroll.
+  // WCAG 2.1.1: a scroll container that can't take focus can only be panned
+  // with a pointer, so overflowing code blocks get tabindex="0" (arrow keys
+  // then scroll natively). role="group" + name, not role="region" — region is
+  // a landmark and a dozen samples would flood the landmark list, but some
+  // role is required for aria-label to be reliably exposed. Only blocks that
+  // actually overflow are marked (layout-dependent, hence the resize re-run —
+  // text zoom is exactly when a sample that used to fit starts to scroll).
   function markScrollableCodeBlocks() {
     var blocks = document.querySelectorAll("#main pre > code");
     for (var i = 0; i < blocks.length; i++) {
@@ -1897,11 +1693,9 @@
     if (swapped === true) focusAndAnnounceAfterSwap();
   }
 
-  // After an in-place (htmx) swap the whole #main is replaced, so focus falls back
-  // to <body> and screen readers get no signal that the page changed. Move focus to
-  // the new #main (tabindex="-1", non-Tab-stop) and announce the new title in the
-  // persistent live region so keyboard/SR users land in — and are told about — the
-  // new content. §7.4 of the modernization design requires this explicitly.
+  // After an in-place swap, focus falls back to <body> and screen readers get
+  // no signal the page changed: move focus to the new #main (tabindex="-1")
+  // and announce the new title in the persistent live region.
   function focusAndAnnounceAfterSwap() {
     var main = document.getElementById("main");
     if (main) {
@@ -1918,47 +1712,30 @@
   }
 
   /* ------------------ <head> metadata across swaps ------------------ */
-  // hx-select="#main" means a boosted response's <head> is discarded entirely:
-  // htmx updates document.title and the URL, and nothing else. So the tags that
-  // identify the page — the canonical URL, the description, and the platform's
-  // aws-tocid — keep advertising the FIRST page of the session for every page
-  // after it. That is not cosmetic here: trackVirtualPageView below deliberately
-  // lets the platform build its beacon from the live document, so an un-synced
-  // head reports every later page view under the landing page's identity (land
-  // on TAmazonS3Client, click through to TAmazonEC2Client, and the EC2 view is
-  // still attributed to S3 for the rest of the session). Anything else reading
-  // the document — a feedback widget, a share action, a crawler that executes
-  // scripts — sees the same stale facts.
-  //
-  // These values exist only in the response body, which only htmx:beforeSwap
-  // sees, so they are captured there and applied on the matching afterSwap.
-  // Back/Forward is covered too: a history restore re-swaps content htmx cached
-  // (or re-fetches the page) and likewise never touches the head, and once one
-  // in-place navigation has happened, leaving the head alone is no longer the
-  // right answer for a restore either.
-  //
-  // The three per-page tags, as [tag, keyAttr, keyValue, valueAttr]. Mirrors what
-  // DocShell.WriteHeadAndChrome emits; a null value means "the page has no such tag",
-  // which is a real case (canonical is conditional on Options.CanonicalUrl).
+  // hx-select="#main" discards a boosted response's <head>, so the tags that
+  // identify the page — canonical, description, aws-tocid — would keep
+  // advertising the first page of the session. That skews analytics:
+  // trackVirtualPageView lets the platform build its beacon from the live
+  // document, so an un-synced head attributes every later page view to the
+  // first page. The values exist only in the response body, which only
+  // htmx:beforeSwap sees — capture there, apply on the matching afterSwap.
+  // (Back/Forward history restores are left alone: a stale canonical during a
+  // restore is harmless, and tracking fires only on real navigations.)
   var HEAD_META_TAGS = [
     ["link", "rel", "canonical", "href"],
     ["meta", "name", "description", "content"],
     ["meta", "name", "aws-tocid", "content"]
   ];
-  // Per-DOCUMENT table so Back/Forward can restore a head htmx never sends again.
-  // Bounded: a session of in-place navigation can cover thousands of pages, and
-  // this is only ever read for an entry still reachable in history. It does not
-  // outlive a reload (htmx's own snapshot cache does, in sessionStorage), so a
-  // Back across one lands on a cache hit with no head to restore — which is the
-  // pre-existing behavior of leaving the head alone, not a new wrong value.
-  var HEAD_META_MAX = 50;
-  var _headMetaByPath = {};
-  var _headMetaOrder = [];
   var _pendingHeadMeta = null;
 
-  // Values in HEAD_META_TAGS order, or null if there is nothing to read.
-  function collectHeadMeta(scope) {
-    if (!scope) return null;
+  // Parses only the head of a full response (a couple of KB; htmx already
+  // parsed the body for hx-select). No "</head>" means this is not a whole
+  // page — take nothing rather than guess from a prefix cut mid-tag.
+  function readHeadMeta(responseText) {
+    if (typeof responseText !== "string") return null;
+    var end = responseText.indexOf("</head>");
+    if (end === -1) return null;
+    var scope = sharedParser().parseFromString(responseText.slice(0, end), "text/html");
     var out = [];
     for (var i = 0; i < HEAD_META_TAGS.length; i++) {
       var t = HEAD_META_TAGS[i];
@@ -1966,17 +1743,6 @@
       out.push(n ? n.getAttribute(t[3]) : null);
     }
     return out;
-  }
-
-  // Parses only the head of a full response: it is a couple of KB, and the body
-  // (an API table of any size) is irrelevant here — htmx has already parsed that
-  // for hx-select. No "</head>" at all means this is not a whole page, so take
-  // nothing rather than guess from a prefix cut mid-tag.
-  function readHeadMeta(responseText) {
-    if (typeof responseText !== "string") return null;
-    var end = responseText.indexOf("</head>");
-    if (end === -1) return null;
-    return collectHeadMeta(sharedParser().parseFromString(responseText.slice(0, end), "text/html"));
   }
 
   function applyHeadMeta(values) {
@@ -2000,384 +1766,89 @@
     }
   }
 
-  // Keyed on pathname+search so a forward navigation (which records
-  // location.href) and a restore (which reports htmx's own
-  // "pathname+search" path) agree. The hash is dropped on purpose: one document,
-  // one head, whichever member row the reader deep-linked to.
-  function headMetaKey(path) {
-    try {
-      var u = new URL(path, window.location.href);
-      return u.pathname + u.search;
-    } catch (e) { return null; }
-  }
-
-  function rememberHeadMeta(path, values) {
-    var key = values && headMetaKey(path);
-    if (!key) return;
-    var at = _headMetaOrder.indexOf(key);
-    if (at !== -1) _headMetaOrder.splice(at, 1);
-    _headMetaOrder.push(key);            // most-recently-visited last
-    _headMetaByPath[key] = values;
-    while (_headMetaOrder.length > HEAD_META_MAX) {
-      delete _headMetaByPath[_headMetaOrder.shift()];
-    }
-  }
-
-  function recallHeadMeta(path) {
-    var key = headMetaKey(path);
-    if (!key || !Object.prototype.hasOwnProperty.call(_headMetaByPath, key)) return null;
-    return _headMetaByPath[key];
-  }
-
-  // Back/Forward. A cache MISS re-fetched the page, so its head is in the event;
-  // a HIT only carries the cached history-element content, so the head comes from
-  // the table above. Registered separately from the scroll handler on the same
-  // event — that one returns early per branch.
-  document.addEventListener("htmx:historyRestore", function (ev) {
-    var d = ev.detail || {};
-    var path = d.path || window.location.href;
-    var restored = d.cacheMiss ? readHeadMeta(d.serverResponse) : recallHeadMeta(path);
-    if (!restored) return;
-    applyHeadMeta(restored);
-    rememberHeadMeta(path, restored);
-  });
-
   /* ---------------------- Analytics page views ---------------------- */
-  // In-place navigation has to report its own page views. The docs platform
-  // bootstrap (awsdocs-boot.js, loaded once per page by DocShell) sends its
-  // Adobe beacon on document load and instruments nothing else — it predates
-  // this doc set being navigated in place. The CloudWatch RUM plugin alongside
-  // it patches pushState, so RUM already counts boosted navigations; the Adobe
-  // stream does not, and left alone every page after the first in a session goes
-  // unreported. That shows up as a traffic cliff on release day and reads as a
-  // real drop in doc usage rather than as an instrumentation gap.
-  //
+  // In-place navigation has to report its own page views: the docs platform
+  // bootstrap (awsdocs-boot.js) sends its Adobe beacon on document load only,
+  // so left alone every page after the first in a session goes unreported.
   // Dispatched through AWSMA's own trigger event so the platform builds the
-  // beacon from the live document instead of this file assembling one — nothing
-  // here needs to know the report suite, the page-name scheme, or the consent
-  // state. No detail payload is attached for the same reason: the trigger is the
-  // signal, and inventing a shape risks the platform reading a field we guessed
-  // at. Guarded on AWSMA existing, so a local preview or a standalone copy of
-  // the doc set (no platform script) is a silent no-op.
+  // beacon from the live document (report suite, consent state, page-name
+  // scheme all stay its business). No AWSMA (local preview) = silent no-op.
   var _lastTrackedHref = null;
   function trackVirtualPageView() {
     var ma = window.AWSMA;
     if (!ma) return;
-    // A swap that leaves the URL alone is not a new page view, and afterSwap can
-    // fire more than once for one navigation.
+    // A swap that leaves the URL alone is not a new page view, and afterSwap
+    // can fire more than once for one navigation.
     if (window.location.href === _lastTrackedHref) return;
     _lastTrackedHref = window.location.href;
     var trigger = typeof ma.TRIGGER_EVENT === "string" ? ma.TRIGGER_EVENT : "custom_awsma_trigger";
-    try {
-      document.dispatchEvent(new CustomEvent(trigger));
-    } catch (e) { /* no CustomEvent constructor — nothing to report, not fatal */ }
+    document.dispatchEvent(new CustomEvent(trigger));
   }
 
   // htmx:load fires only for htmx-swapped content, NOT the initial document, so
-  // drive init from both: DOMContentLoaded for first paint, htmx:afterSwap for
-  // every in-place navigation. onPageLoad is idempotent (once() guards) so a
-  // double-invocation is harmless.
+  // drive init from both; onPageLoad is idempotent (once() guards).
   document.addEventListener("DOMContentLoaded", function () {
     onPageLoad(false);
     // The platform counted this load itself; record it so the first swap is
     // measured against it.
     _lastTrackedHref = window.location.href;
-    // This document's own head, banked before any swap overwrites it, so Back to
-    // the page the session started on restores the right identity.
-    rememberHeadMeta(window.location.href, collectHeadMeta(document.head));
   });
   document.addEventListener("htmx:afterSwap", function () {
-    // Before any per-page setup runs: make the head describe the page that just
-    // landed. The swap never carries it (hx-select="#main"), so it comes from
-    // what beforeSwap read off the response. Null on a history restore — that
-    // path applies its own, above.
+    // Make the head describe the page that just landed (captured in beforeSwap;
+    // the swap itself never carries it).
     applyHeadMeta(_pendingHeadMeta);
+    _pendingHeadMeta = null;
     onPageLoad(true);
     // Deferred a task: htmx sets the URL and <title> as part of handling the
-    // navigation, and the platform reads both off the live document. The URL is
-    // also what keys the head-metadata table, so bank this page's head here too,
-    // once location is authoritative.
-    setTimeout(function () {
-      rememberHeadMeta(window.location.href, _pendingHeadMeta);
-      _pendingHeadMeta = null;
-      trackVirtualPageView();
-    }, 0);
+    // navigation, and the platform reads both off the live document.
+    setTimeout(trackVirtualPageView, 0);
   });
 
-  // Scroll handling for in-place navigation. htmx's `scroll:top` targets the swapped
-  // element (#main), which is not a scroll container in this layout (the window
-  // scrolls), so it is a no-op — a boosted/search/sidebar nav would otherwise keep
-  // the previous scroll offset. Scroll the window to top on each swap, UNLESS the
-  // target URL carries a #fragment, so member deep-links (e.g. #prop_Foo) still land
-  // on their row. Runs after settle so the swapped-in content/anchor exists.
-  //
-  // Two things fight this and must be neutralized: (1) the browser's automatic
-  // scroll restoration on history navigation (htmx pushes history), and (2) the
-  // global `scroll-behavior: smooth` on <html>, which would animate — and let htmx's
-  // own scrollIntoViewOnBoost interrupt — the reset. So take over scroll restoration
-  // and force an instant jump.
-  if ("scrollRestoration" in history) history.scrollRestoration = "manual";
-
-  // Manual scrollRestoration also disables the browser's restore on plain
-  // reloads (F5) and full-load back/forward. Compensate: remember the offset
-  // on pagehide and re-apply it when the SAME URL comes back via one of those
-  // navigation types (never on fresh link navigations, and a #fragment wins).
-  var SCROLL_KEY = "awsdocs-scroll";
-  window.addEventListener("pagehide", function () {
-    try {
-      sessionStorage.setItem(SCROLL_KEY,
-        JSON.stringify({ href: window.location.href, y: window.scrollY || 0 }));
-    } catch (e) { /* private mode */ }
-  });
-  document.addEventListener("DOMContentLoaded", function () {
-    var entries = (window.performance && performance.getEntriesByType)
-      ? performance.getEntriesByType("navigation") : [];
-    var navType = entries.length ? entries[0].type : "";
-    if (navType !== "reload" && navType !== "back_forward") return;
-    if (window.location.hash) return;
-    try {
-      var saved = JSON.parse(sessionStorage.getItem(SCROLL_KEY) || "null");
-      if (saved && saved.href === window.location.href && saved.y > 0) {
-        window.scrollTo(0, saved.y);
-      }
-    } catch (e) { /* ignore */ }
-  });
-
-  // Instant (not smooth): behavior "auto" follows the CSS scroll-behavior of
-  // the scroller, and <html> has scroll-behavior: smooth — an animated reset
-  // can be interrupted mid-flight by a wheel/keypress, stranding the reader
-  // mid-page on the new document. "instant" bypasses the CSS; the fallback
-  // forces it via the style for engines without the enum.
-  function scrollTopInstant() {
-    if (!window.scrollTo) return;
-    try { window.scrollTo({ top: 0, left: 0, behavior: "instant" }); }
-    catch (e) {
-      var prev = document.documentElement.style.scrollBehavior;
-      document.documentElement.style.scrollBehavior = "auto";
-      window.scrollTo(0, 0);
-      document.documentElement.style.scrollBehavior = prev;
-    }
-  }
-
-  // If the current URL carries a #fragment whose target exists in the (settled)
-  // content, land on it — member deep-links like "…#prop_Foo" — else go to top.
+  // Scroll handling for in-place navigation. htmx's own scroll handling targets
+  // the swapped element (#main), which is not a scroll container in this layout
+  // (the window scrolls), so it is a no-op — a boosted/search/sidebar nav would
+  // otherwise keep the previous scroll offset. Scroll the window to top on each
+  // forward navigation, UNLESS the URL carries a #fragment, so member
+  // deep-links (e.g. #prop_Foo) land on their row. Runs after settle so the
+  // swapped-in anchor target exists. History traversals are left to the
+  // browser's native scroll restoration.
   function scrollToHashTargetOrTop() {
     var hash = window.location.hash;
     if (hash && hash.length > 1) {
-      // decodeURIComponent throws URIError on malformed escapes ("#%"); fall
-      // back to the raw fragment so a bad link degrades to a top scroll (or a
-      // literal-id match) instead of an uncaught error in the settle handler.
+      // decodeURIComponent throws on malformed escapes ("#%"); degrade to the
+      // raw fragment rather than an uncaught error in the settle handler.
       var id = hash.slice(1);
       try { id = decodeURIComponent(id); } catch (e) { /* keep raw */ }
       var target = document.getElementById(id);
-      if (target && target.scrollIntoView) {
+      if (target) {
         markTargetRow(target);
-        try { target.scrollIntoView({ behavior: "instant", block: "start" }); }
-        catch (e) { target.scrollIntoView(); }
+        target.scrollIntoView({ block: "start" });
         return;
       }
     }
-    scrollTopInstant();
+    window.scrollTo(0, 0);
   }
 
   document.addEventListener("htmx:afterSettle", function (ev) {
     // History restores (Back/Forward) also settle, but with no requestConfig in
-    // the event detail. On a cache HIT htmx re-applies the scroll position it
-    // saved with the snapshot — resetting to top would throw the reader's place
-    // away. (Cache misses are handled off htmx:historyRestore below.)
+    // the event detail — their scroll is restoration's business, not ours.
     if (!ev.detail || !ev.detail.requestConfig) return;
     scrollToHashTargetOrTop();
   });
 
-  // History restore that MISSED the snapshot cache: htmx re-fetches the page
-  // but applies no scroll (only cache hits carry a saved offset), and native
-  // restoration is off (scrollRestoration = manual) — without this the viewport
-  // keeps the previous page's arbitrary offset. Misses are routine here: the
-  // snapshots of large API pages shed quickly from sessionStorage. The event
-  // fires after the synchronous swap, so a restored deep-link's #fragment
-  // target is already in the DOM and wins over the top-of-page reset.
-  var _restoreScrollBehaviorTimer = null;
-  document.addEventListener("htmx:historyRestore", function (ev) {
-    if (ev.detail && ev.detail.cacheMiss) {
-      // A same-document return that the veto below didn't intercept (htmx
-      // re-fetched the page we were already on): land on the pre-jump offset
-      // rather than the top of the page.
-      var origin = fragmentReturnOffset();
-      if (origin !== null) {
-        scrollToOffsetInstant(origin);
-        return;
-      }
-      scrollToHashTargetOrTop();
-      return;
-    }
-    // Cache HIT: htmx re-applies the snapshot's saved offset via a bare
-    // window.scrollTo in a setTimeout(0) — which follows the scroller's CSS
-    // scroll-behavior, and <html> is `smooth`, so the restore animates and a
-    // wheel/keypress can interrupt it mid-flight (the exact failure
-    // scrollTopInstant exists to avoid). Suppress smooth around that restore.
-    // Timing: this lift runs in a 60ms timeout registered after htmx's 0ms
-    // one, so the override is still in force when htmx's scroll fires. The
-    // lift clears the inline style (nothing else sets one persistently)
-    // rather than restoring a captured value: two restores inside the window
-    // would capture "auto" as the "previous" value and latch it forever.
-    clearTimeout(_restoreScrollBehaviorTimer);
-    document.documentElement.style.scrollBehavior = "auto";
-    _restoreScrollBehaviorTimer = setTimeout(function () {
-      document.documentElement.style.scrollBehavior = "";
-    }, 60);
-  });
-
-  // Instant scroll to a remembered offset — see scrollTopInstant on why a smooth
-  // restore is the wrong thing (it animates, and an animation can be interrupted).
-  function scrollToOffsetInstant(y) {
-    try { window.scrollTo({ top: y, left: 0, behavior: "instant" }); }
-    catch (e) { window.scrollTo(0, y); }
-  }
-
-  // Native same-document fragment traversal gets no scroll handling at all
-  // with scrollRestoration = "manual": an "In this article" #anchor click
-  // pushes a normal null-state entry (fragment-only hrefs are never boosted),
-  // and on Back/Forward the browser suppresses both its scroll restore and
-  // its fragment re-scroll — the URL changes, the viewport doesn't. Handle
-  // those traversals here. The state.htmx guard is load-bearing: htmx
-  // replaceStates {htmx:true} onto every entry it manages and runs its own
-  // restore for them on popstate — scrolling here too would fight it. Those
-  // entries are handled instead by the historyCacheHit/Miss pair below.
-  //
-  // Backward direction: Back from "page#a" to "page" has no fragment to land
-  // on, and scrolling to top would strand the reader far from where they were
-  // before the jump. So the moment a fragment-only anchor is clicked, the
-  // pre-jump offset is remembered two ways: stamped on the CURRENT history entry
-  // (merged into whatever state htmx put there — the htmx flag must survive) for
-  // entries htmx does not manage, and in the table below for the ones it does.
-  //
-  // The table is not redundant. htmx replaceStates a bare {htmx:true} over the
-  // current entry at the END of saveCurrentPageToHistory, which it runs at the
-  // top of every restore AND before every boosted request — so on any page
-  // reached by in-place navigation, which is the common case, the stamp is wiped
-  // before it can ever be read back. Re-stamping from htmx:beforeHistorySave
-  // does not work either: that event fires just BEFORE the same replaceState,
-  // so the wipe still lands last.
-  //
-  // Keyed by path+search, the shape htmx keys its own history cache by: the
-  // fragment is exactly what differs between the two entries, so it cannot be
-  // part of the key. In-memory and bounded — a real document load has the
-  // browser's restoration and SCROLL_KEY above to fall back on, and starting
-  // empty is what stops an offset from outliving the session that recorded it.
-  var ANCHOR_ORIGIN_LIMIT = 32;
-  var anchorOrigins = []; // [{ key, y }], first-seen order; oldest key evicted first
-
-  function docHistoryKey() {
-    return window.location.pathname + window.location.search;
-  }
-
-  function rememberAnchorOrigin(key, y) {
-    for (var i = 0; i < anchorOrigins.length; i++) {
-      if (anchorOrigins[i].key === key) { anchorOrigins[i].y = y; return; }
-    }
-    anchorOrigins.push({ key: key, y: y });
-    if (anchorOrigins.length > ANCHOR_ORIGIN_LIMIT) anchorOrigins.shift();
-  }
-
-  function anchorOriginFor(key) {
-    for (var i = 0; i < anchorOrigins.length; i++) {
-      if (anchorOrigins[i].key === key) return anchorOrigins[i].y;
-    }
-    return null;
-  }
-
-  document.addEventListener("click", function (ev) {
-    if (ev.defaultPrevented) return;
-    var a = ev.target && ev.target.closest ? ev.target.closest('a[href^="#"]') : null;
-    if (!a) return;
-    var y = window.scrollY || 0;
-    rememberAnchorOrigin(docHistoryKey(), y);
-    var st = history.state || {};
-    st.awsScrollY = y;
-    try { history.replaceState(st, "", window.location.href); } catch (e) { /* quota/sandbox */ }
-  });
-  window.addEventListener("popstate", function (ev) {
-    if (ev.state && ev.state.htmx) return;
-    if (!window.location.hash && ev.state && typeof ev.state.awsScrollY === "number") {
-      // Returning to a stamped pre-jump entry: restore its offset.
-      scrollToOffsetInstant(ev.state.awsScrollY);
-      return;
-    }
-    scrollToHashTargetOrTop();
-  });
-
-  // The htmx-managed half of the same story. When Back lands on an entry htmx
-  // owns it runs its own restore, and for a return from "page#a" to "page" that
-  // restore is pure waste: the document is already mounted, so htmx re-swaps
-  // identical content (discarding in-page state, re-announcing the page to
-  // screen readers, and on a cache MISS re-fetching it over the network) and
-  // then applies the scroll offset it saved microseconds earlier at the top of
-  // the same restore — which is the anchor the reader is trying to leave. Both
-  // restore paths are cancelable, so veto them and do the only thing that has to
-  // happen: put the viewport back where the reader was before the jump.
-  //
-  // The same-document test is deliberately narrow, because the opposite error —
-  // vetoing a restore that DID need to swap — would leave the reader on the
-  // wrong page under the right URL. All three conditions must hold:
-  //   * the target URL carries no fragment, so there is nothing to scroll TO;
-  //   * htmx's own idea of the mounted path matches the path being restored;
-  //   * a fragment jump was recorded FROM that exact path, which only a click in
-  //     the live document can do.
-  // The last one carries the weight: htmx falls back to location.pathname for
-  // its saved path whenever it has not navigated in-place yet, and during a
-  // popstate location already reads as the restore target — so the second
-  // condition alone can be trivially true on a cross-document restore.
-  var _htmxSavedPath = null;
-  document.addEventListener("htmx:beforeHistorySave", function (ev) {
-    _htmxSavedPath = (ev.detail && ev.detail.path) || null;
-  });
-
-  function fragmentReturnOffset() {
-    if (window.location.hash) return null;
-    var key = docHistoryKey();
-    if (_htmxSavedPath !== key) return null;
-    return anchorOriginFor(key);
-  }
-
-  function vetoRedundantRestore(ev) {
-    var y = fragmentReturnOffset();
-    if (y === null) return;
-    ev.preventDefault();
-    scrollToOffsetInstant(y);
-  }
-  // Vetoing the swap also skips htmx's own "current path" bookkeeping, which is
-  // harmless here and only here: the path it would record is the one it already
-  // has — that equality is the gate.
-  document.addEventListener("htmx:historyCacheHit", vetoRedundantRestore);
-  document.addEventListener("htmx:historyCacheMiss", vetoRedundantRestore);
-
   /* ------------------- Failed history restores ---------------------- */
-  // The history cache holds 10 entries, so going back far enough misses it and
-  // htmx re-fetches the page (refreshOnHistoryMiss stays false — the cheap
-  // #main swap is the whole point). That fetch can fail, and htmx does not
-  // recover: on a non-2xx it fires htmx:historyCacheMissLoadError and swaps
-  // nothing, and on a transport failure (offline, DNS, reset connection) its
-  // xhr has no onerror at all, so nothing happens whatsoever. Either way
-  // popstate has ALREADY moved the address bar, so silence leaves the reader on
-  // the previous page's content under the restored page's URL — the same
-  // URL-lies-about-content state the boosted-navigation fallbacks above exist
-  // to prevent, which is why this one gets the same treatment.
-  //
-  // reload(), not assign(path): popstate has put the target URL in the address
-  // bar already, so a reload re-fetches exactly the document the URL now claims
-  // and cannot be turned into a same-URL no-op the way assign() can. A browser
-  // error page is a truthful outcome here; stale content is not. This runs at
-  // most once per failed restore — a document load cannot re-enter it.
+  // A history-cache miss makes htmx re-fetch the page, and that fetch can fail
+  // with popstate having ALREADY moved the address bar — silence would leave
+  // the previous page's content under the restored page's URL. reload(), not
+  // assign(): the address bar already holds the target URL, so a reload
+  // re-fetches exactly what the URL claims. A browser error page is a truthful
+  // outcome here; stale content is not.
   function reloadAfterFailedRestore() { window.location.reload(); }
   document.addEventListener("htmx:historyCacheMissLoadError", reloadAfterFailedRestore);
-  // Transport failures never reach that event, so watch the xhr htmx hands over
-  // with the miss event itself. Skipped when the miss was vetoed just above:
-  // htmx gates .send() on this event, so a vetoed request is never sent and its
-  // xhr can only ever stay silent. Deliberately only "error": there is no
-  // "timeout" to hear (htmx never sets xhr.timeout on this request), and
-  // "abort" here is the browser tearing down in-flight requests as the document
-  // unloads — reloading then would fight the navigation the reader just asked
-  // for.
+  // Transport failures (offline, DNS) never reach that event — htmx's restore
+  // xhr has no onerror — so watch the xhr handed over with the miss event.
+  // Only "error": "abort" is the browser tearing down requests as the document
+  // unloads, and reloading then would fight the navigation the reader asked for.
   document.addEventListener("htmx:historyCacheMiss", function (ev) {
     if (ev.defaultPrevented) return;
     var xhr = ev.detail && ev.detail.xhr;
@@ -2392,22 +1863,6 @@
     for (var i = 0; i < prev.length; i++) prev[i].classList.remove("is-target-row");
     target.classList.add("is-target-row");
   }
-
-  /* ------------------------- Nav progress bar ----------------------- */
-  // htmx has no built-in progress bar; drive a slim top bar off request events.
-  // The element is looked up per event (never captured in a closure): an htmx
-  // history restore can replace it with a fresh node, which a captured
-  // reference would silently stop controlling.
-  function setNavProgress(active) {
-    var bar = document.getElementById("navProgress");
-    if (!bar) return;
-    bar.hidden = !active;
-    bar.classList.toggle("is-active", active);
-  }
-  document.addEventListener("htmx:beforeRequest", function () { setNavProgress(true); });
-  document.addEventListener("htmx:afterRequest", function () { setNavProgress(false); });
-  // Safety net: clear the bar once content has settled.
-  document.addEventListener("htmx:afterSettle", function () { setNavProgress(false); });
 
   /* ----------------------- Failed navigations ----------------------- */
   // htmx fails closed: a 4xx/5xx response or a network error swaps nothing, so

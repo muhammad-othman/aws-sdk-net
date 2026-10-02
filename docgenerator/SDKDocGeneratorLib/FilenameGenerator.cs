@@ -117,15 +117,11 @@ namespace SDKDocGenerator
             return Fixup(string.Format("N_{0}", namespaceName)) + ".html";
         }
 
-        // Anchor ids for members that are rendered as table rows on the owning type
-        // page (properties, fields, enum members) rather than as their own page.
-        // ClassWriter stamps these ids on the <tr>. The v2 search index stores NO
-        // anchor strings: search-worker.js DERIVES them client-side from its
-        // ANCHOR_PREFIX map ("prop_"/"field_"/"member_" + member name) so a result
-        // can scroll to the exact row. CONTRACT: change these prefixes and that map
-        // in lockstep (pinned by MemberAnchors_MatchTypePageRowIds) — the generated
-        // JSON contains no prefix to grep for. Member names are .NET identifiers,
-        // so they are already URL-fragment safe.
+        // Anchor ids for members rendered as rows on the owning type page
+        // (properties, fields, enum members); ClassWriter stamps them on the <tr>.
+        // CONTRACT: search-worker.js DERIVES these client-side (ANCHOR_PREFIX) —
+        // the index stores no anchor strings, so change both in lockstep (pinned
+        // by MemberAnchors_MatchTypePageRowIds).
         public static string PropertyAnchor(string memberName)
         {
             return "prop_" + memberName;

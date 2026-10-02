@@ -79,19 +79,12 @@
                 return;
             }
 
-            // Folder-less legacy value: resolve the page through toc.json (namespace
-            // and type entries) — by the tocid param FIRST, then by the page's own
-            // filename. Order matters: tocid is exact and service-scoped, while a
-            // filename is only a suffix heuristic — type page filenames are bare
-            // type names, so the same "TTag.html" exists under dozens of service
-            // folders and a filename-first scan would redirect a duplicate-named
-            // type to whichever service sorts first. A tocid match splits by page
-            // kind: member pages (M/P/F/E filenames) always carry their DECLARING
-            // TYPE's tocid, so the bookmarked filename is kept and only the entry's
-            // folder is reused; a type/namespace page (T/N) whose filename changed
-            // self-heals to the entry's current href (the tocid outlives a rename).
-            // The filename pass remains as fallback for tocid-less bookmarks and
-            // tocids that no longer exist. Any failure → fallback.
+            // Folder-less legacy value: resolve the page through toc.json — by the
+            // tocid param FIRST (exact and service-scoped; member pages carry their
+            // declaring type's tocid, so only the folder is reused), then by the
+            // page's own filename (a suffix heuristic — duplicate type names exist
+            // under many service folders — kept as fallback for tocid-less
+            // bookmarks). Any failure → fallback.
             fetch("./toc.json")
                 .then(function (r) { return r.ok ? r.json() : null; })
                 .then(function (toc) {
