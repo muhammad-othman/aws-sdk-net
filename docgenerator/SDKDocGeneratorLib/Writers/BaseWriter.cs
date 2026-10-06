@@ -122,7 +122,6 @@ namespace SDKDocGenerator.Writers
                     Title = GetTitle(),
                     TocId = FilenameGenerator.Escape(this.GetTOCID()),
                     ContentSubFolder = Artifacts.Options.ContentSubFolderName,
-                    AssetVersion = Artifacts.Options.AssetVersion,
                     DataVersion = Artifacts.Options.DataVersion,
                     CanonicalUrl = string.Format(
                         "https://docs.aws.amazon.com/sdkfornet/v4/apidocs/items/{0}/{1}",

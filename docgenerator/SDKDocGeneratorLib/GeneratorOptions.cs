@@ -102,17 +102,14 @@ namespace SDKDocGenerator
         public string BJSDocsDomain { get; set; }
 
         /// <summary>
-        /// Cache-busting token appended to static CSS/JS asset URLs as ?v=&lt;hash&gt;
-        /// so a CDN can never pair new HTML with stale assets. Computed per run by
-        /// SdkDocGenerator (deterministic, not a timestamp). Null disables versioning.
-        /// </summary>
-        public string AssetVersion { get; set; }
-
-        /// <summary>
-        /// Cache-busting token the client runtime appends (?v=&lt;hash&gt;) to the
-        /// runtime-fetched data files (toc.json, search-index*.json,
-        /// _sdk-versions.json), emitted on every page as data-datav. Computed per
-        /// run by SdkDocGenerator. Null disables versioning.
+        /// Single cache-busting token for the whole doc set, appended as
+        /// ?v=&lt;hash&gt; to static CSS/JS asset URLs and (via the data-datav body
+        /// attribute) by the client runtime to the runtime-fetched data files
+        /// (toc.json, search-index*.json, _sdk-versions.json), so a CDN can never
+        /// pair new HTML with stale assets or data. One token suffices: the SDK
+        /// version bumps on every release, which is also when assets change.
+        /// Computed per run by SdkDocGenerator (deterministic, not a timestamp).
+        /// Null disables versioning.
         /// </summary>
         public string DataVersion { get; set; }
 

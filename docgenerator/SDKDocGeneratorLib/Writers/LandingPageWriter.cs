@@ -53,7 +53,6 @@ namespace SDKDocGenerator.Writers
                             + "the complexity out of coding by providing .NET APIs for many AWS services "
                             + "including Amazon S3, Amazon EC2, DynamoDB and more.",
                 ContentSubFolder = Options.ContentSubFolderName,
-                AssetVersion = Options.AssetVersion,
                 DataVersion = Options.DataVersion,
                 CanonicalUrl = "https://docs.aws.amazon.com/sdkfornet/v4/apidocs/items/sdk-api-home.html"
             };

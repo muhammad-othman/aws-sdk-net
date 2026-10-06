@@ -390,7 +390,7 @@ namespace SDKDocGenerator.Writers
             var finalBody = templateBody.Replace("{TOC}", tocContent);
             // Same cache-busting query DocShell puts on every generated page's assets.
             finalBody = finalBody.Replace("{cssVersionQuery}",
-                string.IsNullOrEmpty(Options.AssetVersion) ? "" : "?v=" + Options.AssetVersion);
+                string.IsNullOrEmpty(Options.DataVersion) ? "" : "?v=" + Options.DataVersion);
             // Same pre-paint theme bootstrap DocShell emits on every generated page.
             finalBody = finalBody.Replace("{themeBootstrap}", DocShell.ThemeBootstrapScript);
             return finalBody;

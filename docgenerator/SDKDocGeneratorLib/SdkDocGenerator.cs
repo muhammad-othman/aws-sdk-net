@@ -73,11 +73,8 @@ namespace SDKDocGenerator
             // One ?v= cache-busting token for the static assets and the
             // runtime-fetched data files; must land before the first page is
             // written (every page embeds it in asset links and as data-datav).
-            var docsVersion = ComputeDocsVersion();
-            if (string.IsNullOrEmpty(Options.AssetVersion))
-                Options.AssetVersion = docsVersion;
             if (string.IsNullOrEmpty(Options.DataVersion))
-                Options.DataVersion = docsVersion;
+                Options.DataVersion = ComputeDocsVersion();
 
             if (Options.Verbose)
             {

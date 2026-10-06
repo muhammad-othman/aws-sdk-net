@@ -40,10 +40,11 @@ namespace SDKDocGenerator.Writers
             /// </summary>
             public string ContentSubFolder { get; set; } = "items";
 
-            /// <summary>Cache-busting ?v= for CSS/JS links (GeneratorOptions.AssetVersion); null/empty emits bare URLs.</summary>
-            public string AssetVersion { get; set; }
-
-            /// <summary>Cache-busting token for runtime data fetches, emitted as body data-datav (GeneratorOptions.DataVersion); null/empty omits it.</summary>
+            /// <summary>
+            /// Doc-set cache-busting token (GeneratorOptions.DataVersion): appended as
+            /// ?v= to CSS/JS links and emitted as body data-datav for the client
+            /// runtime's data fetches. Null/empty emits bare URLs and no attribute.
+            /// </summary>
             public string DataVersion { get; set; }
         }
 
@@ -82,7 +83,7 @@ namespace SDKDocGenerator.Writers
             var description = string.IsNullOrEmpty(o.Description) ? o.Title : o.Description;
             // Cache-busting suffix for our own CSS/JS (not the platform boot script,
             // whose lifecycle the docs site owns).
-            var v = string.IsNullOrEmpty(o.AssetVersion) ? "" : "?v=" + o.AssetVersion;
+            var v = string.IsNullOrEmpty(o.DataVersion) ? "" : "?v=" + o.DataVersion;
 
             writer.WriteLine("<!DOCTYPE html>");
             writer.WriteLine("<html lang=\"en\">");

@@ -137,7 +137,7 @@ namespace SDKDocGenerator.UnitTests
             {
                 RootRelativePath = "../..",
                 Title = "T",
-                AssetVersion = "abcd1234"
+                DataVersion = "abcd1234"
             };
             using (var sw = new StringWriter())
             {
@@ -147,6 +147,8 @@ namespace SDKDocGenerator.UnitTests
                 Assert.Contains("../../resources/aws-docs.css?v=abcd1234", html);
                 Assert.Contains("../../resources/app.js?v=abcd1234", html);
                 Assert.Contains("../../resources/htmx.min.js?v=abcd1234", html);
+                // One DataVersion token drives both the asset links and data-datav.
+                Assert.Contains("data-datav=\"abcd1234\"", html);
                 // The docs-platform boot script is not ours to version.
                 Assert.Contains("src=\"/assets/js/awsdocs-boot.js\"", html);
             }
@@ -155,7 +157,7 @@ namespace SDKDocGenerator.UnitTests
         [Fact]
         public void Shell_OmitsVersionQueryWhenUnset()
         {
-            var html = RenderShell(); // RenderShell leaves AssetVersion null
+            var html = RenderShell(); // RenderShell leaves DataVersion null
             Assert.DoesNotContain("?v=", html);
         }
 
