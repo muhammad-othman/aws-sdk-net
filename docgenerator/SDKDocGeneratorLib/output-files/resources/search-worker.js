@@ -60,8 +60,19 @@ var FETCH_TIMEOUT_MS = 45000;
 // Declaring-type table from the manifest (parallel arrays, one slot per type).
 var TYPE_FOLDERS = null; // resolved folder string
 var TYPE_NAMES = null;   // display name (HTML-encoded, e.g. "Foo&lt;T&gt;")
-var TYPE_LNAMES = null;  // lower-cased display name (qualified-query gate)
+var TYPE_LNAMES = null;  // DECODED + lower-cased display name (qualified-query gate)
 var TYPE_FILES = null;   // type page file (anchor derivation base)
+
+// The index stores display names HTML-encoded (generics as "Foo&lt;T&gt;"), but
+// queries are raw text and app.js scores types against DECODED names — the gate
+// must match on the same form or "Foo<T>.Bar" finds the type and zero members.
+// No DOMParser in a worker, so decode by string: only the entities the
+// generator's GetDisplayName actually emits (&lt;/&gt;), plus &amp; LAST so a
+// literal "&amp;lt;" can't double-decode.
+function decodeEntities(s) {
+  if (s.indexOf("&") === -1) return s;
+  return s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+}
 
 // Member rows, appended chunk by chunk (parallel arrays for tight memory /
 // fast scan). Lowercase names and acronyms are precomputed once at append
@@ -174,7 +185,7 @@ function init(indexUrl) {
         var row = typeRows[k];  // [folderIdx, typeName, typeFile]
         TYPE_FOLDERS[k] = folderTable[row[0]];
         TYPE_NAMES[k] = row[1];
-        TYPE_LNAMES[k] = row[1].toLowerCase();
+        TYPE_LNAMES[k] = decodeEntities(row[1]).toLowerCase();
         TYPE_FILES[k] = row[2];
       }
       if (!data.chunks.length) {

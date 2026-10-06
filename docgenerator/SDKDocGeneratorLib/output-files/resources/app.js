@@ -73,9 +73,21 @@
   // which the snippet doesn't touch.
   applyTheme(preferredTheme());
 
+  // MediaQueryList.addEventListener only exists since Safari 14; on older
+  // Safari/iOS the call throws, and a throw here aborts this whole IIFE —
+  // no sidebar, no search, no inline-handler API, strictly worse than
+  // JS-disabled (the noscript fallbacks stay hidden). Both watchers are
+  // enhancements, so fall back to the legacy addListener and lose nothing
+  // else.
+  function watchMedia(query, fn) {
+    var mql = window.matchMedia(query);
+    if (mql.addEventListener) mql.addEventListener("change", fn);
+    else if (mql.addListener) mql.addListener(fn);
+  }
+
   // Follow OS theme changes at runtime — but only while the user hasn't made an
   // explicit choice (a stored value always wins, matching preferredTheme()).
-  window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", function (ev) {
+  watchMedia("(prefers-color-scheme: dark)", function (ev) {
     try { if (localStorage.getItem(THEME_KEY)) return; } catch (e) { /* private mode */ }
     applyTheme(ev.matches ? "dark" : "light");
   });
@@ -758,7 +770,7 @@
   // 1024px the scrim/hamburger CSS stops applying but body.nav-open and #main's
   // `inert` would persist, leaving the content dead with no toggle to clear it.
   // Keep in sync with the @media (max-width: 1024px) block in aws-docs.css.
-  window.matchMedia("(max-width: 1024px)").addEventListener("change", function (ev) {
+  watchMedia("(max-width: 1024px)", function (ev) {
     if (!ev.matches) closeDrawer();
   });
 
