@@ -102,6 +102,14 @@ namespace SDKDocGenerator
         public string BJSDocsDomain { get; set; }
 
         /// <summary>
+        /// Cache-busting token appended as ?v=&lt;hash&gt; to the
+        /// runtime-fetched data files (toc.json, search-index*.json,
+        /// _sdk-versions.json) and the static CSS/JS asset URLs.
+        /// Computed per run by SdkDocGenerator. Null disables versioning.
+        /// </summary>
+        public string DataVersion { get; set; }
+
+        /// <summary>
         /// The root folder containing SDK code samples
         /// </summary>
         public string CodeSamplesRootFolder { get; set; }

@@ -736,7 +736,7 @@ namespace SDKDocGenerator
                 }
                 else if (this.IsSystemNamespace)
                 {
-                    url = string.Format(NDocUtilities.MSDN_TYPE_URL_PATTERN, this.GetDisplayName(true).ToLower());
+                    url = string.Format(NDocUtilities.MSDN_TYPE_URL_PATTERN, this.GetDisplayName(true).ToLowerInvariant());
                     target = " target=_new";
                     label = nameOrFullName;
                 }
@@ -749,6 +749,29 @@ namespace SDKDocGenerator
             }
 
             return html;
+        }
+
+        /// <summary>
+        /// URL of this type's reference page, or null when there is no single page to
+        /// link to. Mirrors the URLs CreateReferenceHtml puts in its anchors: SDK types
+        /// get their generated page (relative from any items/&lt;Service&gt;/ page, where
+        /// every doc-comment transform runs), System types their Microsoft docs page.
+        /// Used when a resolved &lt;see cref&gt; is rewritten to a real href.
+        /// </summary>
+        public string GetHelpPageUrl()
+        {
+            if (this.Namespace == null)
+                return null;
+            if (this.IsAmazonNamespace)
+                return $"../{GenerationManifest.OutputSubFolderFromNamespace(this.Namespace)}/{FilenameGenerator.GenerateFilename(this)}";
+            if (this.IsSystemNamespace)
+            {
+                if (this.IsGenericType)
+                    return $"https://docs.microsoft.com/en-us/dotnet/api/{this.Namespace}.{this.Name.Replace('`', '-')}";
+                // ToLowerInvariant: URL path segment, locale-stable (tr/az dotless ı).
+                return string.Format(NDocUtilities.MSDN_TYPE_URL_PATTERN, this.GetDisplayName(true).ToLowerInvariant());
+            }
+            return null;
         }
 
         public bool IsSystemNamespace
