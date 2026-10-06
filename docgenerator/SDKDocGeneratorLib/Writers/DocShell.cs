@@ -130,8 +130,9 @@ namespace SDKDocGenerator.Writers
             // needs settling — stateful chrome lives outside #main.
             writer.WriteLine("<meta name=\"htmx-config\" content='{\"allowEval\":false,\"allowScriptTags\":false,\"selfRequestsOnly\":true,\"attributesToSettle\":[]}'/>");
             writer.WriteLine("<script src=\"{0}/resources/htmx.min.js{1}\" defer></script>", root, v);
-            // highlight.min.js is the highlight.js "common" build, which already
-            // bundles the csharp grammar (the only language the generator emits).
+            // highlight.min.js is a custom highlight.js build bundling only the
+            // csharp, xml and json grammars (see THIRD-PARTY-NOTICES.md); the
+            // generator only ever emits language-csharp code blocks.
             writer.WriteLine("<script src=\"{0}/resources/highlight.min.js{1}\" defer></script>", root, v);
             // Shared local-search scorer (also imported by search-worker.js).
             writer.WriteLine("<script src=\"{0}/resources/search-core.js{1}\" defer></script>", root, v);

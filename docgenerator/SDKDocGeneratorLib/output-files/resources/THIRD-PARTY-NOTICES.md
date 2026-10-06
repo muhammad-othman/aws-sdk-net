@@ -46,16 +46,21 @@ OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 ## highlight.js
 
-- **Files:** `highlight.min.js` (the "common" build — 30+ bundled languages,
-  including the C# grammar this doc set uses)
+- **Files:** `highlight.min.js` (custom build containing only the `csharp`,
+  `xml`, and `json` grammars — the full "common" build ships 30+ languages this
+  doc set never emits)
 - **Version:** 11.10.0 (git 366a8bd012)
-- **Source:** https://unpkg.com/@highlightjs/cdn-assets@11.10.0/highlight.min.js
+- **Source:** built from https://github.com/highlightjs/highlight.js at tag
+  `11.10.0` with the project's official build tool (the same tool behind the
+  download page's custom bundles): `npm ci && node ./tools/build.js -t browser
+  csharp xml json`, output `build/highlight.min.js`
 - **Project:** https://github.com/highlightjs/highlight.js
 - **Copyright:** © 2006-2024 Josh Goebel and other contributors
 - **License:** BSD-3-Clause
 
 Used for client-side syntax highlighting of C# (type signatures and samples;
-the generator only ever emits `language-csharp` code blocks). The GitHub
+the generator only ever emits `language-csharp` code blocks — `xml` and `json`
+are included as headroom for config/manifest snippets in doc comments). The GitHub
 light/dark color themes from this release are adapted into the syntax-
 highlighting section of `aws-docs.css` (bridged to the `[data-theme]`
 attribute).
