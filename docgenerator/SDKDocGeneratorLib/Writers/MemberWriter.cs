@@ -85,7 +85,7 @@ namespace SDKDocGenerator.Writers
             writer.WriteLine("</td>");
 
             writer.WriteLine("<td>");
-            writer.WriteLine(condition);
+            writer.WriteLine(System.Net.WebUtility.HtmlEncode(condition));
             writer.WriteLine("</td>");
 
             writer.WriteLine("</tr>");

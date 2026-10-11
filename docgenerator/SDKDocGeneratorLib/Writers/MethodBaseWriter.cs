@@ -44,7 +44,7 @@ namespace SDKDocGenerator.Writers
                             writer.WriteLine("Type: {0}<br />", paramType.CreateReferenceHtml(fullTypeName: true));
                             
                             var doc = NDocUtilities.FindParameterDocumentation(ndoc, parameter.Name);
-                            writer.WriteLine("<p>{0}</p>", doc);
+                            writer.WriteLine("<p>{0}</p>", System.Net.WebUtility.HtmlEncode(doc));
 
                         writer.WriteLine("</dd>");
 

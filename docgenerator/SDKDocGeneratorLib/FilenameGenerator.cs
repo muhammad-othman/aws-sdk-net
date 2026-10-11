@@ -117,6 +117,21 @@ namespace SDKDocGenerator
             return Fixup(string.Format("N_{0}", namespaceName)) + ".html";
         }
 
+        public static string PropertyAnchor(string memberName)
+        {
+            return "prop_" + memberName;
+        }
+
+        public static string FieldAnchor(string memberName)
+        {
+            return "field_" + memberName;
+        }
+
+        public static string EnumMemberAnchor(string memberName)
+        {
+            return "member_" + memberName;
+        }
+
         public static string Escape(string url)
         {
             return url.Replace("`", "&#96;");

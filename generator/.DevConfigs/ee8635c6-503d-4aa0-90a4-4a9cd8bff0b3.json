@@ -1,0 +1,9 @@
+{
+  "core": {
+    "changeLogMessages": [
+      "Modernized the API reference documentation front end: replaced the frameset UI with in-place (htmx) navigation, a responsive light/dark design system, and built-in local search."
+    ],
+    "type": "patch",
+    "updateMinimum": false
+  }
+}

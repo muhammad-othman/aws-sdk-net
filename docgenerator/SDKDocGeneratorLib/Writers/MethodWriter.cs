@@ -98,7 +98,7 @@ namespace SDKDocGenerator.Writers
                     var returnDoc = NDocUtilities.FindReturnDocumentation(ndoc);
                     if (returnDoc != null)
                     {
-                        writer.WriteLine("<div class=\"returnTypeDoc\">{0}</div>", returnDoc);
+                        writer.WriteLine("<div class=\"returnTypeDoc\">{0}</div>", System.Net.WebUtility.HtmlEncode(returnDoc));
                     }
                 }
 

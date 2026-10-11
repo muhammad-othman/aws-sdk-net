@@ -70,6 +70,12 @@ namespace SDKDocGenerator
                 return -1;
             }
 
+            // One ?v= cache-busting token for the static assets and the
+            // runtime-fetched data files; must land before the first page is
+            // written (every page embeds it in asset links and as data-datav).
+            if (string.IsNullOrEmpty(Options.DataVersion))
+                Options.DataVersion = ComputeDocsVersion();
+
             if (Options.Verbose)
             {
                 Info("Starting generation with options:");
@@ -278,6 +284,25 @@ namespace SDKDocGenerator
             Info("...platform set to '{0}'", Options.Platform);
             Info("...services set to {0}", string.Join(",", Options.Services));
             Info("");
+        }
+
+        private string ComputeDocsVersion()
+        {
+            try
+            {
+                if (!File.Exists(Options.SDKVersionFilePath))
+                    return null;
+
+                using (var sha = System.Security.Cryptography.SHA256.Create())
+                {
+                    var hash = sha.ComputeHash(File.ReadAllBytes(Options.SDKVersionFilePath));
+                    return BitConverter.ToString(hash, 0, 4).Replace("-", "").ToLowerInvariant();
+                }
+            }
+            catch (Exception)
+            {
+                return null;
+            }
         }
 
         /// <summary>

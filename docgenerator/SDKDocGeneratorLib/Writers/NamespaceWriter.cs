@@ -120,7 +120,7 @@ namespace SDKDocGenerator.Writers
                 // funky but works
                 var imageClassDisplayName = string.Format("{0}{1}", cssImageClass.Substring(0, 1).ToUpper(), cssImageClass.Substring(1));
 
-                writer.WriteLine("<td>");
+                writer.WriteLine("<td class=\"iconColumn\">");
                 writer.WriteLine("<img class=\"{0}\" src=\"{2}/resources/blank.gif\" title=\"{1}\" alt=\"{1}\"/>", cssImageClass, imageClassDisplayName, RootRelativePath);
                 writer.WriteLine("</td>");
 
