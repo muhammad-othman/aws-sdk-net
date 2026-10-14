@@ -172,7 +172,12 @@ body {
   background: var(--canvas);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
 }
+
+.layout { flex: 1 0 auto; }
 
 a { color: var(--link); text-decoration: none; }
 a:hover { color: var(--link-hover); text-decoration: underline; }
@@ -569,7 +574,6 @@ body.search-modal-open { overflow: hidden; }
 #main {
   margin-left: var(--sidebar-w);
   margin-top: var(--topbar-h);
-  min-height: calc(100vh - var(--topbar-h));
   padding: var(--sp-6) var(--sp-6) var(--sp-8);
 }
 /* Chrome-less pages (the static TOC.html fallback) share this stylesheet but
@@ -1040,11 +1044,24 @@ pre:hover .code-copy,
   gap: var(--sp-3);
 }
 #pageFooter a { color: var(--link); }
+
+.site-footer {
+  margin-left: var(--sidebar-w);
+  padding: var(--sp-4) var(--sp-6) var(--sp-5);
+  border-top: 1px solid var(--border);
+  background: var(--canvas);
+}
+.site-footer > div {
+  max-width: var(--content-max);
+  margin: 0 auto;
+}
+body.standalone .site-footer { margin-left: 0; }
 #awsdocs-legal-zone-copyright {
   width: 100%;
   color: var(--ink-faint);
   font-size: var(--fs-xs);
 }
+#awsdocs-legal-zone-copyright a { color: var(--link); }
 
 /* --------------------- Member-type icons --------------------------
    Theme-aware codicon glyphs drawn with CSS mask-image over a per-kind color
@@ -1192,6 +1209,7 @@ span.parameter, .returnTypeName, .returnTypeDoc { margin-left: 16px; }
   body.nav-open { overflow: hidden; }
 
   #main { margin-left: 0; padding: var(--sp-5) var(--sp-4) var(--sp-7); }
+  .site-footer { margin-left: 0; padding: var(--sp-4) var(--sp-4) var(--sp-5); }
 }
 
 @media (max-width: 640px) {
@@ -1240,7 +1258,7 @@ span.parameter, .returnTypeName, .returnTypeDoc { margin-left: 16px; }
    "not print", so the light :root values hold on paper). */
 @media print {
   #topbar, #sidebar, #navScrim, #navProgress, #searchModal,
-  #pageTOC, #pageFooter, .skip-link, .code-copy { display: none !important; }
+  #pageTOC, #pageFooter, .site-footer, .skip-link, .code-copy { display: none !important; }
 
   #main {
     margin: 0 !important;

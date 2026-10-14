@@ -202,7 +202,6 @@ namespace SDKDocGenerator.Writers
         {
             writer.WriteLine("<div id=\"pageFooter\">");
                 writer.WriteLine(FeedbackSection, GenerateFeedbackHTML());
-                writer.WriteLine("<div id=\"awsdocs-legal-zone-copyright\"></div>");
             writer.WriteLine("</div>");
         }
 

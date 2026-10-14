@@ -278,7 +278,10 @@ namespace SDKDocGenerator
                 }
 
                 WriteNamespace(frameworkVersion, namespaceName);
-                tocWriter.BuildNamespaceToc(namespaceName, ManifestAssemblyContext.SdkAssembly);
+                // PlatformMap: WriteNamespace just documented this namespace's
+                // platform-exclusive methods on their class pages, so the search
+                // index has to see them too (same map, same types).
+                tocWriter.BuildNamespaceToc(namespaceName, ManifestAssemblyContext.SdkAssembly, PlatformMap);
 
                 Trace.WriteLine($"\t\t{namespaceName} processed ({++processed} of {namespaceNames.Count()})");
             }
@@ -307,9 +310,14 @@ namespace SDKDocGenerator
         ///
         /// Uses MethodInfoWrapper instances stored in the map during the initial scan,
         /// so no assemblies need to be reloaded.
+        ///
+        /// Nothing is registered with the TOC writer here: the exclusive methods were
+        /// already collected into the TOC/search artifacts by
+        /// <see cref="Generate"/> (which hands the platform map to
+        /// <see cref="TOCWriter.BuildNamespaceToc"/>), so this pass only has pages left
+        /// to write.
         /// </summary>
-        /// <param name="tocWriter">TOC generation handler</param>
-        public void GenerateExclusivePagesFromMap(TOCWriter tocWriter)
+        public void GenerateExclusivePagesFromMap()
         {
             if (PlatformMap == null)
             {

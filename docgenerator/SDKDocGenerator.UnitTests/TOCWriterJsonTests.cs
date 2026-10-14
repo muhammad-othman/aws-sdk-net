@@ -254,6 +254,63 @@ namespace SDKDocGenerator.UnitTests
         }
 
         [Fact]
+        public void PageOwners_LastTypeWrittenToAFileWins()
+        {
+            var first = new List<TOCWriter.MemberEntry>
+            {
+                new TOCWriter.MemberEntry { Folder = "Glue", Name = "Data", Kind = 2, Type = "AmazonRedshiftSource", TypeFile = "TRedshiftSource.html", TypeId = "Amazon.Glue.Model.AmazonRedshiftSource" }
+            };
+            var second = new List<TOCWriter.MemberEntry>
+            {
+                new TOCWriter.MemberEntry { Folder = "Glue", Name = "Name", Kind = 2, Type = "RedshiftSource", TypeFile = "TRedshiftSource.html", TypeId = "Amazon.Glue.Model.RedshiftSource" },
+                // Same file name in ANOTHER service folder stays its own page.
+                new TOCWriter.MemberEntry { Folder = "S3", Name = "Name", Kind = 2, Type = "RedshiftSource", TypeFile = "TRedshiftSource.html", TypeId = "Amazon.S3.Model.RedshiftSource" }
+            };
+
+            var owners = TOCWriter.ResolvePageOwners(new[] { first, second });
+
+            Assert.Equal("Amazon.Glue.Model.RedshiftSource", owners["Glue/TRedshiftSource.html"]);
+            Assert.Equal("Amazon.S3.Model.RedshiftSource", owners["S3/TRedshiftSource.html"]);
+        }
+
+        [Fact]
+        public void PageOwners_ResolveAcrossNamespacesAndIgnoreDisplayNames()
+        {
+            // The DynamoDBv2 case: both types share the display name, so only the
+            // full name tells them apart.
+            var constantClass = new List<TOCWriter.MemberEntry>
+            {
+                new TOCWriter.MemberEntry { Folder = "DynamoDBv2", Name = "ALL_OLD", Kind = 3, Type = "ReturnValuesOnConditionCheckFailure", TypeFile = "TReturnValuesOnConditionCheckFailure.html", TypeId = "Amazon.DynamoDBv2.ReturnValuesOnConditionCheckFailure" }
+            };
+            var enumType = new List<TOCWriter.MemberEntry>
+            {
+                new TOCWriter.MemberEntry { Folder = "DynamoDBv2", Name = "AllOld", Kind = 5, Type = "ReturnValuesOnConditionCheckFailure", TypeFile = "TReturnValuesOnConditionCheckFailure.html", TypeId = "Amazon.DynamoDBv2.DocumentModel.ReturnValuesOnConditionCheckFailure" }
+            };
+
+            var owners = TOCWriter.ResolvePageOwners(new[] { constantClass, enumType });
+
+            Assert.Equal("Amazon.DynamoDBv2.DocumentModel.ReturnValuesOnConditionCheckFailure",
+                owners["DynamoDBv2/TReturnValuesOnConditionCheckFailure.html"]);
+        }
+
+        [Fact]
+        public void PageOwners_LeaveNonCollidingAndIdentityLessEntriesAlone()
+        {
+            var entries = new List<TOCWriter.MemberEntry>
+            {
+                new TOCWriter.MemberEntry { Folder = "S3", Name = "BucketName", Kind = 2, Type = "PutObjectRequest", TypeFile = "TPutObjectRequest.html", TypeId = "Amazon.S3.Model.PutObjectRequest" },
+                new TOCWriter.MemberEntry { Folder = "S3", Name = "Key", Kind = 2, Type = "PutObjectRequest", TypeFile = "TPutObjectRequest.html", TypeId = "Amazon.S3.Model.PutObjectRequest" },
+                // No TypeId (hand-built, as in these tests): nothing to resolve.
+                new TOCWriter.MemberEntry { Folder = "S3", Name = "Tagging", Kind = 2, Type = "PutObjectRequest", TypeFile = "TPutObjectRequest.html" }
+            };
+
+            var owners = TOCWriter.ResolvePageOwners(new[] { entries });
+
+            Assert.Single(owners);
+            Assert.Equal("Amazon.S3.Model.PutObjectRequest", owners["S3/TPutObjectRequest.html"]);
+        }
+
+        [Fact]
         public void KindCodes_MatchClientAnchorPrefixes()
         {
             // The v2 index tags anchor-kind rows with these numeric codes, and

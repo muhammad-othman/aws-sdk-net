@@ -190,14 +190,174 @@ namespace SDKDocGenerator.UnitTests
         [Fact]
         public void EntityEncodedMarkupInText_StaysText()
         {
-            // Service-model doc strings are authored outside this repo; entity-encoded
-            // markup in them is literal text and must never come back to life as
-            // elements on the generated page (stored XSS).
+            // Not well-formed markup (unquoted attribute values), so there is nothing
+            // to decode: it stays the literal text it is, and must never come back to
+            // life as elements on the generated page (stored XSS).
             var result = TransformSummary("Returns &lt;img src=x onerror=alert(1)&gt; markers.");
 
             Assert.Equal(
                 "<div class=\"doc-para\">Returns &lt;img src=x onerror=alert(1)&gt; markers.</div>",
                 result);
+        }
+
+        [Fact]
+        public void DoubleEncodedMarkupInText_RendersThroughTheSanitizer()
+        {
+            // Verbatim shape of CodeGuruProfiler's GetProfileRequest summary.
+            var result = TransformSummary(
+                "&lt;note&gt; &lt;p&gt; Because aggregated profiles expire over time "
+                + "&lt;code&gt;GetProfile&lt;/code&gt; is not idempotent. &lt;/p&gt; &lt;/note&gt;");
+
+            // <note> gets the noteblock treatment every authored <note> gets.
+            Assert.Contains("<div class=\"noteblock\">", result);
+            Assert.Contains("<code>GetProfile</code>", result);
+            Assert.Contains("<p> Because aggregated profiles expire over time ", result);
+            Assert.DoesNotContain("&lt;", result);
+        }
+
+        [Fact]
+        public void DoubleEncodedLinkInText_GetsTheSameHardeningAsAuthoredLinks()
+        {
+            var result = TransformSummary(
+                "see &lt;a href=&quot;https://docs.aws.amazon.com/x.html&quot;&gt;the guide&lt;/a&gt;.");
+
+            Assert.Contains(
+                "<a href=\"https://docs.aws.amazon.com/x.html\" target=\"_blank\" rel=\"noopener noreferrer\">the guide</a>",
+                result);
+        }
+
+        [Fact]
+        public void DoubleEncodedScriptInText_IsDemotedNotExecuted()
+        {
+            // The decode is what the old site did; the sanitizer is what it lacked.
+            // A well-formed <script> in doc text is inert either way — but it must be
+            // inert as a <span>, never as a live element.
+            var result = TransformSummary("&lt;script&gt;alert(1)&lt;/script&gt;");
+
+            Assert.Equal("<div class=\"doc-para\"><span>alert(1)</span></div>", result);
+            Assert.DoesNotContain("<script", result);
+        }
+
+        [Fact]
+        public void DoubleEncodedMarkupInText_DecodesExactlyOneLevel()
+        {
+            // One level per node, like the single raw write it replaces: the inner
+            // "&amp;lt;b&amp;gt;" decodes to text "<b>", not to an element.
+            var result = TransformSummary("&lt;p&gt;literal &amp;lt;b&amp;gt; tag&lt;/p&gt;");
+
+            Assert.Equal("<div class=\"doc-para\"><p>literal &lt;b&gt; tag</p></div>", result);
+        }
+
+        [Fact]
+        public void DoubleEncodedAmpersandInText_DecodesToOneAmpersand()
+        {
+            // CloudSearch DescribeDomains: "q=matchall&amp;amp;q.parser=structured"
+            // in the model reaches us as "&amp;" and used to render as "&".
+            var result = TransformSummary("<code>q=matchall&amp;amp;q.parser=structured</code>");
+
+            Assert.Equal("<div class=\"doc-para\"><code>q=matchall&amp;q.parser=structured</code></div>", result);
+        }
+
+        [Fact]
+        public void EscapedSampleInCodeBlock_StaysSourceText()
+        {
+            // The ~5k App.config samples are escaped, well-formed XML sitting in a
+            // code block. Rendering them as elements lowercases their tags, strips
+            // every attribute to the allowlist and leaves an empty block — so inside
+            // <pre>/<code>/<c> the text stays source, exactly as written.
+            var result = TransformSummary(
+                "<pre><code class=\"language-csharp\">&lt;configSections&gt;\n"
+                + "  &lt;add key=\"AWSProfileName\" value=\"dev\"/&gt;\n"
+                + "&lt;/configSections&gt;</code></pre>");
+
+            Assert.Contains("&lt;configSections&gt;", result);
+            Assert.Contains("key=\"AWSProfileName\"", result);
+            Assert.DoesNotContain("<configSections>", result);
+            Assert.DoesNotContain("<configsections>", result);
+        }
+
+        [Fact]
+        public void EscapedMarkupInInlineCode_DecodesEntitiesButNotElements()
+        {
+            // Entity-only content still decodes one level inside code (CloudSearchDomain
+            // documents "&amp;lt;em&amp;gt;" as the default highlight tag, and the page
+            // should show "<em>")…
+            Assert.Equal("<div class=\"doc-para\"><code>&lt;em&gt;</code></div>",
+                TransformSummary("<code>&amp;lt;em&amp;gt;</code>"));
+
+            // …while anything carrying elements stays verbatim source.
+            Assert.Equal("<div class=\"doc-para\"><code>&lt;em&gt;x&lt;/em&gt;</code></div>",
+                TransformSummary("<code>&lt;em&gt;x&lt;/em&gt;</code>"));
+        }
+
+        [Theory]
+        // Placeholders in prose: a lone "<x>" is not well-formed markup, and these
+        // render blank if anything decodes them. (The arn/partition form appears in
+        // hundreds of summaries.)
+        [InlineData("arn:&lt;partition&gt;:iam::123:role", "arn:&lt;partition&gt;:iam::123:role")]
+        [InlineData("if x &lt; y and y &gt; z", "if x &lt; y and y &gt; z")]
+        // An unparseable entity reference (VerifiedPermissions) stays as written.
+        [InlineData("[&quot;&amp;ExampleCogClientId;&quot;]", "[\"&amp;ExampleCogClientId;\"]")]
+        // Mismatched tags: the SageMaker CreateLabelingJob instructions blob.
+        [InlineData("&lt;h1&gt;Add header&lt;/h2&gt;", "&lt;h1&gt;Add header&lt;/h2&gt;")]
+        public void MalformedMarkupInText_StaysLiteralText(string input, string expected)
+        {
+            Assert.Equal("<div class=\"doc-para\">" + expected + "</div>", TransformSummary(input));
+        }
+
+        /* ----------------- Links out of the doc set ------------------- */
+
+        [Fact]
+        public void RootRelativeHref_OptsOutOfHtmxBoosting()
+        {
+            // 177 doc-comment links point at other AWS guides with a root-relative
+            // href. They are same-origin, so the body-level hx-boost would fetch one
+            // and swap it into #main — and those guides carry a <div id="main"> of
+            // their own, so the content probe in app.js cannot catch it either. A full
+            // page load is also what the old frameset did here.
+            var result = TransformSummary(
+                "<a href=\"/general/latest/gr/aws-arns-and-namespaces.html\">ARNs</a>");
+
+            Assert.Equal(
+                "<div class=\"doc-para\"><a href=\"/general/latest/gr/aws-arns-and-namespaces.html\""
+                + " hx-boost=\"false\">ARNs</a></div>",
+                result);
+        }
+
+        [Fact]
+        public void DocSetRelativeHref_StaysBoostable()
+        {
+            // Links WITHIN the doc set are exactly what in-place navigation is for.
+            var result = TransformSummary("<a href=\"../S3/TS3Client.html\">S3</a>");
+
+            Assert.DoesNotContain("hx-boost", result);
+        }
+
+        [Fact]
+        public void AbsoluteHref_KeepsNewTabTreatmentWithoutBoostOptOut()
+        {
+            // target="_blank" already excludes the link from boosting (htmx only
+            // boosts anchors with an empty or _self target), so no hx-boost here.
+            var result = TransformSummary("<a href=\"https://example.com/x\">docs</a>");
+
+            Assert.Contains("target=\"_blank\"", result);
+            Assert.DoesNotContain("hx-boost", result);
+        }
+
+        [Theory]
+        [InlineData("/general/latest/gr/x.html", true)]
+        [InlineData("/", true)]
+        [InlineData("../S3/TS3Client.html", false)]
+        [InlineData("TS3Client.html", false)]
+        [InlineData("#prop_BucketName", false)]
+        [InlineData("https://example.com/x", false)]
+        // Scheme-relative spellings resolve to another ORIGIN; IsSafeDocUrl rejects
+        // them outright, and they must not read as root-relative here either.
+        [InlineData("//evil.example/x", false)]
+        [InlineData("\\\\evil.example/x", false)]
+        public void IsRootRelativeDocUrl_RecognizesOnlySameOriginAbsolutePaths(string url, bool expected)
+        {
+            Assert.Equal(expected, NDocUtilities.IsRootRelativeDocUrl(url));
         }
 
         [Fact]

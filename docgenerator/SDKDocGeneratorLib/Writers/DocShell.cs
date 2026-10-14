@@ -167,10 +167,19 @@ namespace SDKDocGenerator.Writers
             writer.WriteLine("<div class=\"layout\">");
             WriteSidebar(writer, root);
 
-            // tabindex="-1" lets app.js move focus here after a swap (not a Tab
-            // stop). hx-history-elt confines htmx's Back/Forward snapshot to #main —
-            // serializing the chrome would bring it back as dead markup.
-            writer.WriteLine("<main id=\"main\" role=\"main\" tabindex=\"-1\" hx-history-elt>");
+            // tabindex="-1" lets app.js move focus here after a swap (not a Tab stop).
+            // hx-history-elt confines htmx's Back/Forward RESTORE to #main — restoring
+            // the chrome would bring it back as dead, listener-less markup.
+            // hx-history="false" turns the history CACHE off. htmx otherwise clones and
+            // serializes this element into sessionStorage on every navigation AND every
+            // Back; #main is 1.5-1.9 MB on the big client pages, which costs 120-210 ms
+            // of main-thread work per navigation, blows the origin's sessionStorage
+            // quota (shared with the rest of docs.aws.amazon.com) and still misses most
+            // of the time. Without the cache, Back re-fetches the page — a static file,
+            // normally straight from the browser cache. (htmx skips the save as soon as
+            // this attribute exists anywhere in the document; historyCacheSize:0 would
+            // not help, because the clone happens before the size is consulted.)
+            writer.WriteLine("<main id=\"main\" role=\"main\" tabindex=\"-1\" hx-history-elt hx-history=\"false\">");
             // data-tocid rides on .content-shell, not #main: history restores swap
             // only #main's innerHTML, so an attribute on #main itself would go stale.
             writer.WriteLine("<div class=\"content-shell\" data-tocid=\"{0}\">",
@@ -179,15 +188,35 @@ namespace SDKDocGenerator.Writers
 
         /// <summary>
         /// Closes the elements opened by <see cref="WriteHeadAndChrome"/>
-        /// (content-shell, main, layout) and the document.
+        /// (content-shell, main, layout), writes the site footer and ends the document.
         /// </summary>
         public static void WriteFootShell(TextWriter writer)
         {
             writer.WriteLine("</div>"); // .content-shell
             writer.WriteLine("</main>");
             writer.WriteLine("</div>"); // .layout
+
+            WriteSiteFooter(writer);
+
             writer.WriteLine("</body>");
             writer.WriteLine("</html>");
+        }
+
+        /// <summary>
+        /// The platform legal zone (Privacy / Site terms / Cookie preferences / ©).
+        /// The docs platform bootstrap (awsdocs-boot.js) fills this div — and wires the
+        /// cookie-preferences click handler — ONCE per document load, so it has to live
+        /// OUTSIDE #main: inside the swapped region every in-place navigation would
+        /// bring back an empty div that nothing refills, and the consent banner's own
+        /// "Cookie preferences" link would disappear for the rest of the session.
+        /// app.js only supplies a plain copyright line when the platform script is
+        /// absent (local previews, where it 404s).
+        /// </summary>
+        public static void WriteSiteFooter(TextWriter writer)
+        {
+            writer.WriteLine("<footer id=\"siteFooter\" class=\"site-footer\">");
+                writer.WriteLine("<div id=\"awsdocs-legal-zone-copyright\"></div>");
+            writer.WriteLine("</footer>");
         }
 
         /// <summary>

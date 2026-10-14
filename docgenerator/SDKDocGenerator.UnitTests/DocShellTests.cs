@@ -45,6 +45,7 @@ namespace SDKDocGenerator.UnitTests
             AssertBalanced(html, "header");
             AssertBalanced(html, "aside");
             AssertBalanced(html, "nav");
+            AssertBalanced(html, "footer");
         }
 
         private static void AssertBalanced(string html, string tag)
@@ -97,8 +98,43 @@ namespace SDKDocGenerator.UnitTests
             // Without hx-history-elt, htmx snapshots/restores body.innerHTML on
             // Back/Forward, resurrecting the chrome as listener-less dead markup.
             Assert.Contains("hx-history-elt", html);
-            var mainTag = html.Substring(html.IndexOf("<main "), html.IndexOf(">", html.IndexOf("<main ")) - html.IndexOf("<main "));
-            Assert.Contains("hx-history-elt", mainTag);
+            Assert.Contains("hx-history-elt", MainTag(html));
+        }
+
+        [Fact]
+        public void Shell_HistoryCacheIsDisabledOnMain()
+        {
+            var html = RenderShell();
+            // htmx's history cache clones and serializes #main into sessionStorage on
+            // every navigation and every Back. #main reaches 1.5-1.9 MB on the client
+            // pages: 120-210 ms of main-thread work per navigation, a blown
+            // sessionStorage quota for the whole origin, and mostly cache misses
+            // anyway. Back re-fetches a static file instead (normally from the browser
+            // cache). hx-history-elt must stay — it scopes the RESTORE, not the cache.
+            Assert.Contains("hx-history=\"false\"", MainTag(html));
+        }
+
+        // The <main> start tag, for attribute assertions.
+        private static string MainTag(string html)
+        {
+            var start = html.IndexOf("<main ");
+            return html.Substring(start, html.IndexOf(">", start) - start);
+        }
+
+        [Fact]
+        public void Shell_LegalZoneLivesOutsideTheSwappedMain()
+        {
+            var html = RenderShell();
+            // awsdocs-boot.js fills #awsdocs-legal-zone-copyright (Privacy | Site terms
+            // | Cookie preferences | ©) and wires the cookie-preferences handler ONCE
+            // per document load. Inside #main, every in-place navigation would swap in
+            // an empty div that nothing refills — the consent banner's own "Cookie
+            // preferences" link included.
+            var legalZone = html.IndexOf("id=\"awsdocs-legal-zone-copyright\"");
+            Assert.True(legalZone > 0, "the shell must emit the platform legal zone");
+            Assert.True(legalZone > html.IndexOf("</main>"),
+                "the legal zone must sit after </main>, outside the htmx swap target");
+            Assert.Contains("<footer id=\"siteFooter\" class=\"site-footer\">", html);
         }
 
         [Fact]

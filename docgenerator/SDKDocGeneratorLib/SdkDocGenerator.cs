@@ -210,13 +210,13 @@ namespace SDKDocGenerator
                     if (manifest.ServiceName.Equals("Core", StringComparison.OrdinalIgnoreCase))
                         continue;
 
-                    manifest.GenerateExclusivePagesFromMap(TOCWriter);
+                    manifest.GenerateExclusivePagesFromMap();
                 }
 
                 // Now process Core's exclusive members
                 if (coreManifest != null)
                 {
-                    coreManifest.GenerateExclusivePagesFromMap(TOCWriter);
+                    coreManifest.GenerateExclusivePagesFromMap();
                 }
 
                 Info("Generating table of contents entries...");

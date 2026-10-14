@@ -1625,6 +1625,12 @@
       .catch(hideVersion);
   }
 
+  // Local-preview fallback for the platform legal zone. On docs.aws.amazon.com
+  // awsdocs-boot.js fills this div (Privacy | Site terms | Cookie preferences |
+  // ©) before this runs and we leave it alone; where that script 404s (previews,
+  // mirrors) a bare copyright line is better than an empty rule. The div lives
+  // in the persistent chrome, not in #main, so one fill lasts the session — this
+  // is a no-op on every navigation after the first.
   function applyCopyright() {
     var n = document.getElementById("awsdocs-legal-zone-copyright");
     if (n && !n.innerHTML.trim()) {
@@ -1731,10 +1737,9 @@
   // document, so an un-synced head attributes every later page view to the
   // first page. The values exist only in the response body, which only
   // htmx:beforeSwap sees — capture there, apply on the matching afterSwap.
-  // (Back/Forward history restores never fire beforeSwap, so the head goes
-  // stale there. A stale canonical is harmless, but a page-view beacon built
-  // from that head would be misattributed — so restores are not tracked at
-  // all; see the htmx:historyRestore listener below.)
+  // (Back/Forward restores never fire beforeSwap, but with the history cache
+  // off — hx-history="false" on #main — htmx re-fetches the page and hands the
+  // response to htmx:historyRestore, so that listener syncs the head from it.)
   var HEAD_META_TAGS = [
     ["link", "rel", "canonical", "href"],
     ["meta", "name", "description", "content"],
@@ -1787,25 +1792,47 @@
   // Dispatched through AWSMA's own trigger event so the platform builds the
   // beacon from the live document (report suite, consent state, page-name
   // scheme all stay its business). No AWSMA (local preview) = silent no-op.
-  var _lastTrackedHref = null;
+  //
+  // The detail shape is AWSMA's contract (awshome_s_code.js), and every part of
+  // it is load-bearing — its listener THROWS on anything else, which both loses
+  // the page view and reports a JS error to CloudWatch RUM:
+  //   * event.name + event.type are required ("the event detail must includes
+  //     the event name and type");
+  //   * type "pageview" routes to the page-view call, which requires
+  //     page.pageURL, demands an absolute URL carrying its protocol, and
+  //     rejects a URL identical to the one it recorded last;
+  //   * page.pageName must NOT be set ("the pageName cannot be overriden") —
+  //     the platform derives the page name itself.
+  var _lastReportedPageUrl = null;  // last URL AWSMA accepted; its own guard rejects a repeat
+  var _skipTrackingForHref = null;  // navigation that must not be counted (see historyRestore)
   function trackVirtualPageView() {
     var ma = window.AWSMA;
     if (!ma) return;
-    // A swap that leaves the URL alone is not a new page view, and afterSwap
-    // can fire more than once for one navigation.
-    if (window.location.href === _lastTrackedHref) return;
-    _lastTrackedHref = window.location.href;
+    var href = window.location.href;
+    // A swap that leaves the URL alone is not a new page view, and afterSwap can
+    // fire more than once for one navigation.
+    if (href === _lastReportedPageUrl || href === _skipTrackingForHref) return;
     var trigger = typeof ma.TRIGGER_EVENT === "string" ? ma.TRIGGER_EVENT : "custom_awsma_trigger";
-    document.dispatchEvent(new CustomEvent(trigger));
+    _lastReportedPageUrl = href;
+    // Reporting anything else makes the skipped page countable again: coming
+    // BACK to it later is a genuine page view, and AWSMA's own duplicate guard
+    // is satisfied once another URL has gone through.
+    _skipTrackingForHref = null;
+    document.dispatchEvent(new CustomEvent(trigger, {
+      detail: {
+        event: { type: "pageview", name: "Virtual pageview" },
+        page: { pageURL: href }
+      }
+    }));
   }
 
   // htmx:load fires only for htmx-swapped content, NOT the initial document, so
   // drive init from both; onPageLoad is idempotent (once() guards).
   document.addEventListener("DOMContentLoaded", function () {
     onPageLoad(false);
-    // The platform counted this load itself; record it so the first swap is
-    // measured against it.
-    _lastTrackedHref = window.location.href;
+    // The platform counted this load itself, so re-reporting it here would be a
+    // duplicate — and AWSMA rejects a page view for the URL it just recorded.
+    _skipTrackingForHref = window.location.href;
   });
   document.addEventListener("htmx:afterSwap", function () {
     // Make the head describe the page that just landed (captured in beforeSwap;
@@ -1818,12 +1845,18 @@
     setTimeout(trackVirtualPageView, 0);
   });
   // History restores (Back/Forward) fire htmx:afterSwap too, but never
-  // htmx:beforeSwap — the head still describes the pre-Back page, so a beacon
-  // would attribute the restored page's view to the wrong page. Mark the
-  // restored URL as already tracked; htmx fires this event synchronously,
-  // before the deferred trackVirtualPageView above can run.
-  document.addEventListener("htmx:historyRestore", function () {
-    _lastTrackedHref = window.location.href;
+  // htmx:beforeSwap, so the head still describes the pre-Back page. With the
+  // history cache off (hx-history="false") a restore is always a re-fetch, and
+  // htmx hands us that response here — so the head can be synced from it, which
+  // makes the restored page measurable like any other. Without a response to
+  // read, the head stays stale and a beacon would be misattributed, so that
+  // navigation goes uncounted instead. htmx fires this synchronously, before the
+  // deferred trackVirtualPageView above runs.
+  document.addEventListener("htmx:historyRestore", function (ev) {
+    var response = ev.detail && ev.detail.serverResponse;
+    var meta = readHeadMeta(response);
+    if (meta) applyHeadMeta(meta);
+    else _skipTrackingForHref = window.location.href;
   });
 
   // Scroll handling for in-place navigation. htmx's own scroll handling targets
@@ -1856,6 +1889,28 @@
     // the event detail — their scroll is restoration's business, not ours.
     if (!ev.detail || !ev.detail.requestConfig) return;
     scrollToHashTargetOrTop();
+  });
+
+  /* ---------------- Back during an in-flight navigation -------------
+     hx-sync="this:replace" only cancels a request when a NEWER htmx request
+     starts; a Back is not one. Left alone, the late response pushes its own URL
+     and swaps over the page the browser just restored — the Back is undone and
+     the forward entry is lost. Worse for a link inside the content: the restore
+     has already discarded that anchor's htmx state, so the response swaps with
+     htmx's defaults (innerHTML, no select) and the WHOLE body — topbar, sidebar
+     and a nested #main — lands inside #main.
+     Aborting raises htmx:sendAbort, not htmx:sendError, so the full-page
+     fallback above correctly stays out of it. */
+  var _inFlightXhr = null;
+  document.addEventListener("htmx:beforeSend", function (ev) {
+    _inFlightXhr = (ev.detail && ev.detail.xhr) || null;
+  });
+  document.addEventListener("htmx:afterRequest", function () { _inFlightXhr = null; });
+  window.addEventListener("popstate", function () {
+    if (!_inFlightXhr) return;
+    var xhr = _inFlightXhr;
+    _inFlightXhr = null;
+    try { xhr.abort(); } catch (e) { /* already finished */ }
   });
 
   /* ------------------- Failed history restores ---------------------- */
@@ -1899,15 +1954,21 @@
   document.addEventListener("htmx:responseError", fullNavigationFallback);
   document.addEventListener("htmx:sendError", fullNavigationFallback);
 
-  // A 200 whose body contains no id="main" is worse than an error status:
+  // A 200 that is not one of our pages is worse than an error status:
   // hx-select="#main" + hx-swap="outerHTML" with an empty selection REMOVES
   // the current #main, and with the swap target gone every later boosted
   // click dies in htmx's targetError — navigation is bricked until a hard
-  // reload. Veto the swap and navigate for real instead. (A string probe, not
-  // a parse: every generated page carries a literal id="main".)
+  // reload. Veto the swap and navigate for real instead.
+  //
+  // The probe is the literal <main id="main" every generated page opens its
+  // content with (DocShell.WriteHeadAndChrome and the TOC.html template). It is
+  // a string test, not a parse — but it has to be this specific: other AWS
+  // documentation guides on docs.aws.amazon.com carry <div id="main">, and a
+  // bare id="main" probe let one of those pages swap its unstyled body into
+  // this one (reachable from doc-comment links to other guides).
   document.addEventListener("htmx:beforeSwap", function (ev) {
     var d = ev.detail || {};
-    if (typeof d.serverResponse === "string" && d.serverResponse.indexOf('id="main"') === -1) {
+    if (typeof d.serverResponse === "string" && d.serverResponse.indexOf('<main id="main"') === -1) {
       d.shouldSwap = false;
       fullNavigationFallback(ev);
       return;

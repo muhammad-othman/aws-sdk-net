@@ -1,7 +1,10 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
+
+using SDKDocGenerator.PlatformMap;
 
 namespace SDKDocGenerator.Writers
 {
@@ -46,6 +49,8 @@ namespace SDKDocGenerator.Writers
                                     // whose href the client derives from TypeFile + #anchor
             public string Type;     // declaring type display name, shown as dimmed context
             public string TypeFile; // declaring type's page file (anchor base + type interning key)
+            public string TypeId;   // declaring type FullName — identity for page-owner
+                                    // resolution (display names collide across namespaces)
             public string Sig;      // "(paramTypes)" — ONLY for overloaded methods, else null
         }
 
@@ -55,6 +60,14 @@ namespace SDKDocGenerator.Writers
         private readonly Dictionary<string, List<MemberEntry>> _searchEntriesByNamespace =
             new Dictionary<string, List<MemberEntry>>();
 
+        // Namespace -> position in GENERATION order (not the Ordinal order the
+        // artifacts are emitted in). Page files are written as namespaces are
+        // processed and the last write wins, so this is what decides which type
+        // owns a page file when two types collide on one — see ResolvePageOwners.
+        private readonly Dictionary<string, int> _namespaceGenerationOrder =
+            new Dictionary<string, int>(StringComparer.Ordinal);
+        private int _namespacesCollected;
+
         public TOCWriter(GeneratorOptions options)
             : base(options)
         {
@@ -63,16 +76,25 @@ namespace SDKDocGenerator.Writers
         /// <summary>
         /// Builds the TOC entry (namespace node plus one child node per type) for a
         /// namespace during generation of docs for types in that namespace. These are
-        /// added to the _namespaceTocs collection to be collated into one single master
-        /// toc at the end of processing of all namespaces.
+        /// added to the _namespaceTocs collection to be collated into one single
+        /// top-level toc at the end of processing of all namespaces.
         /// </summary>
-        public void BuildNamespaceToc(string nameSpace, AssemblyWrapper sdkAssemblyWrapper)
+        /// <param name="platformMap">
+        /// The service's platform availability map, when one was built. Supplies the
+        /// platform-exclusive methods that are documented on the class page but do not
+        /// exist on the primary platform, so they are searchable like any other member.
+        /// </param>
+        public void BuildNamespaceToc(string nameSpace, AssemblyWrapper sdkAssemblyWrapper,
+            PlatformAvailabilityMap platformMap = null)
         {
             // Both artifacts replace-on-rewrite (last write wins): a namespace rebuilt
             // from a later pass must never leave toc.json and the search index
             // describing different type sets.
             _namespaceTocs[nameSpace] = BuildNamespaceModel(nameSpace, sdkAssemblyWrapper);
-            _searchEntriesByNamespace[nameSpace] = CollectSearchEntries(nameSpace, sdkAssemblyWrapper);
+            _searchEntriesByNamespace[nameSpace] = CollectSearchEntries(nameSpace, sdkAssemblyWrapper, platformMap);
+            // Re-collection moves the namespace to the end: its pages were rewritten
+            // last too, so it wins any page-file collision against earlier namespaces.
+            _namespaceGenerationOrder[nameSpace] = _namespacesCollected++;
         }
 
         /// <summary>
@@ -83,7 +105,8 @@ namespace SDKDocGenerator.Writers
         /// properties, fields and enum members are rows on the type page, whose
         /// "#anchor" link the client derives from TypeFile + the member name.
         /// </summary>
-        List<MemberEntry> CollectSearchEntries(string nameSpace, AssemblyWrapper sdkAssemblyWrapper)
+        List<MemberEntry> CollectSearchEntries(string nameSpace, AssemblyWrapper sdkAssemblyWrapper,
+            PlatformAvailabilityMap platformMap = null)
         {
             var entries = new List<MemberEntry>();
             foreach (var type in sdkAssemblyWrapper.GetTypesForNamespace(nameSpace))
@@ -91,6 +114,7 @@ namespace SDKDocGenerator.Writers
                 var folder = GenerationManifest.OutputSubFolderFromNamespace(type.Namespace);
                 var typeName = type.GetDisplayName(false);
                 var typePageFile = FilenameGenerator.GenerateFilename(type);
+                var typeId = type.FullName;
 
                 // Anchor-kind entries (properties, fields, enum members) carry NO file:
                 // the client derives "<TypeFile>#<prefix><Name>" itself (the anchor
@@ -100,7 +124,7 @@ namespace SDKDocGenerator.Writers
                 {
                     foreach (var enumName in type.GetEnumNames())
                     {
-                        AddSearchEntry(entries, folder, enumName, KindEnumMember, typeName, typePageFile);
+                        AddSearchEntry(entries, folder, enumName, KindEnumMember, typeName, typePageFile, typeId);
                     }
                     continue;
                 }
@@ -111,6 +135,30 @@ namespace SDKDocGenerator.Writers
                 var declaredMethods = type.GetMethodsToDocument()
                     .Where(m => IsDeclaredOn(m.DeclaringType, type))
                     .ToList();
+                // Platform-exclusive methods (e.g. the net8.0-only H2 streaming APIs)
+                // are absent from the primary platform's reflection, yet
+                // GenerationManifest.WriteType lists them on the class page and
+                // GenerateExclusivePagesFromMap writes their M_*.html pages — so they
+                // must be searchable too, or a documented method with its own page
+                // cannot be found by name. Same signature de-dupe WriteType uses, and
+                // merged BEFORE the overload grouping below so an exclusive overload
+                // makes its siblings carry signatures.
+                if (platformMap != null)
+                {
+                    var exclusiveMethods = platformMap.GetExclusiveMethodsForType(typeId);
+                    if (exclusiveMethods != null)
+                    {
+                        var knownSignatures = new HashSet<string>(
+                            declaredMethods.Select(m => MemberSignature.ForMethod(m)), StringComparer.Ordinal);
+                        foreach (var exclusive in exclusiveMethods)
+                        {
+                            if (!IsDeclaredOn(exclusive.DeclaringType, type))
+                                continue;
+                            if (knownSignatures.Add(MemberSignature.ForMethod(exclusive)))
+                                declaredMethods.Add(exclusive);
+                        }
+                    }
+                }
                 var overloadedNames = new HashSet<string>(declaredMethods
                     .GroupBy(m => m.Name)
                     .Where(g => g.Count() > 1)
@@ -118,14 +166,14 @@ namespace SDKDocGenerator.Writers
                 foreach (var info in declaredMethods)
                 {
                     var sig = overloadedNames.Contains(info.Name) ? FormatSignature(info) : null;
-                    AddSearchEntry(entries, folder, info.Name, KindMethod, typeName, typePageFile,
+                    AddSearchEntry(entries, folder, info.Name, KindMethod, typeName, typePageFile, typeId,
                         FilenameGenerator.GenerateFilename(info), sig);
                 }
                 foreach (var info in type.GetEvents())
                 {
                     if (!IsDeclaredOn(info.DeclaringType, type))
                         continue;
-                    AddSearchEntry(entries, folder, info.Name, KindEvent, typeName, typePageFile,
+                    AddSearchEntry(entries, folder, info.Name, KindEvent, typeName, typePageFile, typeId,
                         FilenameGenerator.GenerateFilename(info));
                 }
 
@@ -135,13 +183,13 @@ namespace SDKDocGenerator.Writers
                 {
                     if (!IsDeclaredOn(info.DeclaringType, type))
                         continue;
-                    AddSearchEntry(entries, folder, info.Name, KindProperty, typeName, typePageFile);
+                    AddSearchEntry(entries, folder, info.Name, KindProperty, typeName, typePageFile, typeId);
                 }
                 foreach (var info in type.GetFields())
                 {
                     if (!IsDeclaredOn(info.DeclaringType, type))
                         continue;
-                    AddSearchEntry(entries, folder, info.Name, KindField, typeName, typePageFile);
+                    AddSearchEntry(entries, folder, info.Name, KindField, typeName, typePageFile, typeId);
                 }
             }
             return entries;
@@ -155,7 +203,7 @@ namespace SDKDocGenerator.Writers
         }
 
         static void AddSearchEntry(List<MemberEntry> entries, string folder, string name, int kind, string type, string typeFile,
-            string ownFile = null, string sig = null)
+            string typeId, string ownFile = null, string sig = null)
         {
             entries.Add(new MemberEntry
             {
@@ -165,6 +213,7 @@ namespace SDKDocGenerator.Writers
                 File = ownFile,
                 Type = type,
                 TypeFile = typeFile,
+                TypeId = typeId,
                 Sig = sig
             });
         }
@@ -290,16 +339,98 @@ namespace SDKDocGenerator.Writers
         /// </summary>
         void WriteSearchIndexJson()
         {
+            // Which type actually owns each emitted page file (see ResolvePageOwners).
+            // Judged in GENERATION order, because that is the order the pages were
+            // written in and the last write wins.
+            var pageOwners = ResolvePageOwners(_searchEntriesByNamespace
+                .OrderBy(kvp => _namespaceGenerationOrder.TryGetValue(kvp.Key, out var seq) ? seq : int.MaxValue)
+                .Select(kvp => kvp.Value));
+
             // Flattened in namespace order (matching toc.json) so the emitted chunks
             // are deterministic regardless of generation order.
             var searchEntries = _searchEntriesByNamespace
                 .OrderBy(kvp => kvp.Key, StringComparer.Ordinal)
                 .SelectMany(kvp => kvp.Value)
+                .Where(e => OwnsPage(pageOwners, e))
                 .ToList();
             foreach (var artifact in SerializeSearchIndexFiles(Options.ContentSubFolderName, searchEntries, SearchIndexChunkRowCount))
             {
                 File.WriteAllText(Path.Combine(Options.OutputFolder, artifact.FileName), artifact.Json);
             }
+        }
+
+        /// <summary>
+        /// Maps each page file ("&lt;folder&gt;/&lt;file&gt;") to the FullName of the type that
+        /// owns it, which is the LAST type written to it.
+        ///
+        /// Two distinct types can resolve to one page file, because
+        /// <see cref="FilenameGenerator"/> strips "Amazon" and the namespace from the
+        /// name: Glue's AmazonRedshiftSource and RedshiftSource both become
+        /// TRedshiftSource.html, and Amazon.DynamoDBv2.ReturnValuesOnConditionCheckFailure
+        /// collides with its Amazon.DynamoDBv2.DocumentModel namesake. The generator
+        /// truncates the file per write, so only the last type's page survives —
+        /// indexing the others would list their members under the surviving type's
+        /// page, mislabelled and pointing at anchors that are not on it.
+        /// </summary>
+        internal static Dictionary<string, string> ResolvePageOwners(
+            IEnumerable<List<MemberEntry>> entriesInGenerationOrder)
+        {
+            var owners = new Dictionary<string, string>(StringComparer.Ordinal);
+            // Only for the warning: the types that lost a page, in first-seen order.
+            var displaced = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+
+            foreach (var entries in entriesInGenerationOrder)
+            {
+                foreach (var entry in entries)
+                {
+                    if (entry.TypeId == null)
+                        continue;
+                    var pageKey = PageKey(entry);
+                    string owner;
+                    if (owners.TryGetValue(pageKey, out owner))
+                    {
+                        if (string.Equals(owner, entry.TypeId, StringComparison.Ordinal))
+                            continue;
+                        List<string> losers;
+                        if (!displaced.TryGetValue(pageKey, out losers))
+                        {
+                            losers = new List<string>();
+                            displaced[pageKey] = losers;
+                        }
+                        if (!losers.Contains(owner))
+                            losers.Add(owner);
+                    }
+                    // Later type wins: it was written to the page last.
+                    owners[pageKey] = entry.TypeId;
+                }
+            }
+
+            foreach (var collision in displaced)
+            {
+                var losers = collision.Value.Where(t => !string.Equals(t, owners[collision.Key], StringComparison.Ordinal));
+                Trace.WriteLine(string.Format(
+                    "\tWARNING: page file {0} is shared by several types; indexing {1} for search and skipping {2}. "
+                    + "Their generated pages overwrite each other (FilenameGenerator name collision).",
+                    collision.Key, owners[collision.Key], string.Join(", ", losers)));
+            }
+
+            return owners;
+        }
+
+        static string PageKey(MemberEntry entry)
+        {
+            return entry.Folder + "/" + entry.TypeFile;
+        }
+
+        // Entries without a recorded type identity (hand-built in unit tests) are
+        // always kept: there is nothing to resolve a collision with.
+        static bool OwnsPage(Dictionary<string, string> pageOwners, MemberEntry entry)
+        {
+            if (entry.TypeId == null)
+                return true;
+            string owner;
+            return !pageOwners.TryGetValue(PageKey(entry), out owner)
+                || string.Equals(owner, entry.TypeId, StringComparison.Ordinal);
         }
 
         // Pure serialization seam, split from the file write so unit tests can pin
@@ -314,9 +445,10 @@ namespace SDKDocGenerator.Writers
                 throw new ArgumentOutOfRangeException(nameof(chunkRowCount));
 
             // Folder and type lookup tables (stable, de-duplicated, ordered by first
-            // use). Types are keyed per folder + page file: distinct types never share
-            // a page file within a folder, and the same-named type in another service
-            // folder must stay a separate row.
+            // use). Types are keyed per folder + page file, which identifies one type
+            // because the caller has already dropped the entries of types that lost a
+            // page-file collision (see ResolvePageOwners); the same-named type in
+            // another service folder must stay a separate row.
             var folderIndex = new Dictionary<string, int>(StringComparer.Ordinal);
             var folders = new List<string>();
             var typeIndex = new Dictionary<string, int>(StringComparer.Ordinal);
