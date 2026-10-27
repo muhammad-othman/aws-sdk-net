@@ -57,8 +57,9 @@ namespace Amazon.WorkspacesInstances.Model.Internal.MarshallTransformations
 
             var reader = context.Reader;
             context.AddPathSegment("ValidationException");
+            context.PeekState(); // ensure the map header is fully buffered
             reader.ReadStartMap();
-            while (reader.PeekState() != CborReaderState.EndMap)
+            while (context.PeekState() != CborReaderState.EndMap)
             {
                 var propertyName = reader.ReadTextString();
                 switch (propertyName)
@@ -76,7 +77,7 @@ namespace Amazon.WorkspacesInstances.Model.Internal.MarshallTransformations
                         break;
 
                     default:
-                        reader.SkipValue();
+                        context.SkipValue();
                         break;
                 }
             }

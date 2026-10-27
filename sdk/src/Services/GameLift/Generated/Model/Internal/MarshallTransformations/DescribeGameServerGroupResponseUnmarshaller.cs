@@ -51,8 +51,9 @@ namespace Amazon.GameLift.Model.Internal.MarshallTransformations
             DescribeGameServerGroupResponse response = new DescribeGameServerGroupResponse();
             var reader = context.Reader;
             context.AddPathSegment("DescribeGameServerGroup");
+            context.PeekState(); // ensure the map header is fully buffered
             reader.ReadStartMap();
-            while (reader.PeekState() != CborReaderState.EndMap)
+            while (context.PeekState() != CborReaderState.EndMap)
             {
                 string propertyName = reader.ReadTextString();
                 switch (propertyName)
@@ -66,7 +67,7 @@ namespace Amazon.GameLift.Model.Internal.MarshallTransformations
                             break;
                         }
                     default:
-                        reader.SkipValue();
+                        context.SkipValue();
                         break;
                 }
             }

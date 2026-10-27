@@ -50,20 +50,21 @@ namespace Amazon.MailManager.Model.Internal.MarshallTransformations
             if (context.IsEmptyResponse) return null;
 
             var reader = context.Reader;
-            if (reader.PeekState() == CborReaderState.Null)
+            if (context.PeekState() == CborReaderState.Null)
             {
                 reader.ReadNull();
                 return null;
             }
 
+            context.PeekState(); // ensure the map header is fully buffered
             reader.ReadStartMap();
-            while (reader.PeekState() != CborReaderState.EndMap)
+            while (context.PeekState() != CborReaderState.EndMap)
             {
                 var propertyName = reader.ReadTextString();
                 switch (propertyName)
                 {
                     default:
-                        reader.SkipValue();
+                        context.SkipValue();
                         break;
                 }
             }

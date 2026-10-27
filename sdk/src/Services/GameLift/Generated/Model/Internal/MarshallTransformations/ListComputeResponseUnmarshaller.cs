@@ -51,8 +51,9 @@ namespace Amazon.GameLift.Model.Internal.MarshallTransformations
             ListComputeResponse response = new ListComputeResponse();
             var reader = context.Reader;
             context.AddPathSegment("ListCompute");
+            context.PeekState(); // ensure the map header is fully buffered
             reader.ReadStartMap();
-            while (reader.PeekState() != CborReaderState.EndMap)
+            while (context.PeekState() != CborReaderState.EndMap)
             {
                 string propertyName = reader.ReadTextString();
                 switch (propertyName)
@@ -74,7 +75,7 @@ namespace Amazon.GameLift.Model.Internal.MarshallTransformations
                             break;
                         }
                     default:
-                        reader.SkipValue();
+                        context.SkipValue();
                         break;
                 }
             }

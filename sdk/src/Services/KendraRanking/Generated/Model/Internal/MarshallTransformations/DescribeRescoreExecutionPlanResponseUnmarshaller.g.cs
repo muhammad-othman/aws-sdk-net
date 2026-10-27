@@ -49,8 +49,9 @@ namespace Amazon.KendraRanking.Model.Internal.MarshallTransformations
             var reader = context.Reader;
 
             context.AddPathSegment("DescribeRescoreExecutionPlan");
+            context.PeekState(); // ensure the map header is fully buffered
             reader.ReadStartMap();
-            while (reader.PeekState() != CborReaderState.EndMap)
+            while (context.PeekState() != CborReaderState.EndMap)
             {
                 var propertyName = reader.ReadTextString();
                 switch (propertyName)
@@ -110,7 +111,7 @@ namespace Amazon.KendraRanking.Model.Internal.MarshallTransformations
                         break;
 
                     default:
-                        reader.SkipValue();
+                        context.SkipValue();
                         break;
                 }
             }
